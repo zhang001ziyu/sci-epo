@@ -1,0 +1,39 @@
+{
+  "title": "One Puff Left",
+  "duration_seconds": 75,
+  "rule": "Pip has one jetpack burst for the entire episode. It cannot be refilled during the delivery.",
+  "initial_resources": { "jetpack_bursts": 1 },
+  "scenes": [
+    {
+      "id": "s1",
+      "duration_seconds": 15,
+      "locked_for_revision": true,
+      "action": "Pip catches the loose metal lid. The cake drifts toward a fan.",
+      "uses": { "jetpack_bursts": 0 }
+    },
+    {
+      "id": "s2",
+      "duration_seconds": 25,
+      "locked_for_revision": true,
+      "action": "Pip fires her last burst and catches the cake.",
+      "uses": { "jetpack_bursts": 1 }
+    },
+    {
+      "id": "s3",
+      "duration_seconds": 35,
+      "locked_for_revision": false,
+      "action": "Pip throws the metal lid away from the hatch. The recoil carries her back.",
+      "uses": { "jetpack_bursts": 0 }
+    }
+  ],
+  "revision_test": {
+    "instruction": "Keep the first two scenes. Give the ending a stronger visual joke.",
+    "rejected_candidate": {
+      "replaces": "s3",
+      "action": "Pip fires her jetpack again and rockets back to the hatch.",
+      "uses": { "jetpack_bursts": 1 },
+      "expected_conflict": { "spent_in": "s2", "conflicts_in": "s3" }
+    },
+    "accepted_reference": { "scene": "s3", "remaining_jetpack_bursts": 0 }
+  }
+}
