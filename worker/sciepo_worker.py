@@ -48,6 +48,12 @@ TOKEN = re.compile(r'\{\{([A-Z][A-Z0-9_]*)\}\}')
 VIDEO_EXTENSIONS = ('.mp4', '.webm', '.mov', '.mkv')
 IMAGE_INPUT_NODES = ('LoadImage',)
 AUDIO_INPUT_NODES = ('LoadAudio', 'VHS_LoadAudio', 'VHS_LoadAudioUpload')
+# ComfyUI's native H3 nodes (comfy_extras/nodes_minimax_h3.py). Each takes prompt, width, height and length directly.
+H3_GENERATORS = ('MiniMaxH3ReferenceToVideo', 'MiniMaxH3ImageToVideo', 'EmptyMiniMaxH3LatentAV')
+REF_IMAGE_INPUT = re.compile(r'^(ref_images\.)?ref_image_(\d+)$')
+REF_AUDIO_INPUT = re.compile(r'^(ref_audios\.)?ref_audio_(\d+)$')
+MAX_REF_IMAGES = 9
+MAX_REF_AUDIO = 3
 
 
 class WorkerError(Exception):
@@ -268,9 +274,6 @@ def prune_missing_references(graph: dict, available: set[str]) -> dict:
         slots = {k for k in keys if re.fullmatch(r'(IMAGE|AUDIO)_\d+', k)}
         if slots and not slots <= available:
             removed.add(node_id)
-
-    def is_link(value: Any) -> bool:
-        return isinstance(value, list) and len(value) == 2 and isinstance(value[1], int)
     # A node fed only by removed nodes (a resize in front of the H3 node, say) goes too; a node that
     # keeps other inputs, like the H3 node itself, only loses the optional reference input.
     changed = True
@@ -295,46 +298,141 @@ def prune_missing_references(graph: dict, available: set[str]) -> dict:
     return graph
 
 
-def prepare_workflow(graph: dict) -> tuple[dict, list[str]]:
-    """Insert placeholders into an API-format workflow by input names; return the graph and a change log."""
-    if not isinstance(graph, dict) or not all(isinstance(n, dict) and 'class_type' in n for n in graph.values()):
+def is_link(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 2 and isinstance(value[1], int)
+
+
+def node_order(node_id: str) -> tuple:
+    """Numeric order for ids such as '9', '115' and '140:131' (nodes of a flattened subgraph)."""
+    return tuple((0, int(part), '') if part.isdigit() else (1, 0, part) for part in str(node_id).split(':'))
+
+
+def upstream(graph: dict, node_id: str, classes: tuple[str, ...], depth: int = 4) -> str | None:
+    """The nearest node of one of these classes at or above node_id, following links up to `depth` steps."""
+    seen: set[str] = set()
+    frontier = [str(node_id)]
+    for _ in range(depth + 1):
+        following: list[str] = []
+        for current in frontier:
+            node = graph.get(current)
+            if current in seen or not isinstance(node, dict):
+                continue
+            seen.add(current)
+            if node.get('class_type') in classes:
+                return current
+            following += [str(v[0]) for v in node.get('inputs', {}).values() if is_link(v)]
+        frontier = following
+    return None
+
+
+def prepare_workflow(graph: dict, turbo: bool = False) -> tuple[dict, list[str]]:
+    """Insert placeholders into an API-format workflow; return the graph and a change log.
+
+    With ComfyUI's native H3 nodes, prompt, width, height and length are set on the H3 node itself, so the
+    templates' prompt box, resolution selector and duration formula are bypassed, and every reference slot
+    of an R2V node gets a load node. Other workflows fall back to guessing by input names."""
+    if not isinstance(graph, dict) or not graph or not all(isinstance(n, dict) and 'class_type' in n for n in graph.values()):
         raise WorkerError('this is not a ComfyUI workflow in API format (use Workflow > Export (API) in ComfyUI)')
     graph = json.loads(json.dumps(graph))
     changes: list[str] = []
-    ids = sorted(graph, key=lambda k: (len(k), k))
+    ids = sorted(graph, key=node_order)
 
     def put(node_id: str, name: str, token: str) -> None:
-        old = graph[node_id]['inputs'][name]
-        graph[node_id]['inputs'][name] = '{{' + token + '}}'
-        shown = old if not isinstance(old, str) or len(old) < 60 else old[:57] + '...'
-        changes.append(f'node {node_id} ({graph[node_id]["class_type"]}) {name}: {shown!r} -> {{{{{token}}}}}')
+        old = graph[node_id]['inputs'].get(name)
+        new = '{{' + token + '}}'
+        graph[node_id]['inputs'][name] = new
+        if old == new:
+            return
+        shown = f'link from node {old[0]}' if is_link(old) else old if not isinstance(old, str) or len(old) < 60 else old[:57] + '...'
+        changes.append(f'node {node_id} ({graph[node_id]["class_type"]}) {name}: {shown!r} -> {new}')
 
-    texts = [(len(v), node_id, name) for node_id in ids for name, v in graph[node_id].get('inputs', {}).items()
-             if isinstance(v, str) and name in ('text', 'prompt', 'positive', 'prompt_text')]
-    if texts:
-        _, node_id, name = max(texts)
-        put(node_id, name, 'PROMPT')
-    else:
-        changes.append('WARNING: no text input found; put {{PROMPT}} into your text-encode node by hand')
-    numeric = {'width': 'WIDTH', 'height': 'HEIGHT', 'length': 'FRAMES', 'frames': 'FRAMES', 'num_frames': 'FRAMES',
-               'video_length': 'FRAMES', 'seed': 'SEED', 'noise_seed': 'SEED'}
-    images = audio = 0
+    generators = [i for i in ids if graph[i]['class_type'] in H3_GENERATORS]
+    for node_id in generators:
+        inputs = graph[node_id].setdefault('inputs', {})
+        for name, token in (('prompt', 'PROMPT'), ('width', 'WIDTH'), ('height', 'HEIGHT'), ('length', 'FRAMES')):
+            if name in inputs:
+                put(node_id, name, token)
+        if graph[node_id]['class_type'] == 'MiniMaxH3ReferenceToVideo':
+            add_reference_slots(graph, node_id, put, changes)
+    if not generators:
+        changes.append('no MiniMax H3 node found; placeholders are guessed from input names')
+        texts = [(len(v), node_id, name) for node_id in ids for name, v in graph[node_id].get('inputs', {}).items()
+                 if isinstance(v, str) and name in ('text', 'prompt', 'positive', 'prompt_text', 'value')]
+        if texts:
+            _, node_id, name = max(texts)
+            put(node_id, name, 'PROMPT')
+        numeric = {'width': 'WIDTH', 'height': 'HEIGHT', 'length': 'FRAMES', 'frames': 'FRAMES', 'num_frames': 'FRAMES', 'video_length': 'FRAMES'}
+        images = audio = 0
+        for node_id in ids:
+            node = graph[node_id]
+            for name, value in list(node.get('inputs', {}).items()):
+                if name in numeric and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    put(node_id, name, numeric[name])
+            if node['class_type'] in IMAGE_INPUT_NODES and isinstance(node['inputs'].get('image'), str):
+                images += 1
+                put(node_id, 'image', f'IMAGE_{images}')
+            if node['class_type'] in AUDIO_INPUT_NODES:
+                field = 'audio' if isinstance(node['inputs'].get('audio'), str) else 'audio_file' if isinstance(node['inputs'].get('audio_file'), str) else None
+                if field:
+                    audio += 1
+                    put(node_id, field, f'AUDIO_{audio}')
     for node_id in ids:
-        node = graph[node_id]
-        for name, value in list(node.get('inputs', {}).items()):
-            if name in numeric and isinstance(value, (int, float)) and not isinstance(value, bool):
-                put(node_id, name, numeric[name])
+        for name, value in list(graph[node_id].get('inputs', {}).items()):
+            if name in ('seed', 'noise_seed') and isinstance(value, (int, float)) and not isinstance(value, bool):
+                put(node_id, name, 'SEED')
             elif name == 'filename_prefix' and isinstance(value, str):
                 put(node_id, name, 'OUTPUT_PREFIX')
-        if node['class_type'] in IMAGE_INPUT_NODES and isinstance(node['inputs'].get('image'), str):
-            images += 1
-            put(node_id, 'image', f'IMAGE_{images}')
-        if node['class_type'] in AUDIO_INPUT_NODES:
-            field = 'audio' if isinstance(node['inputs'].get('audio'), str) else 'audio_file' if isinstance(node['inputs'].get('audio_file'), str) else None
-            if field:
-                audio += 1
-                put(node_id, field, f'AUDIO_{audio}')
+    if turbo:
+        switches = [i for i in ids if graph[i]['class_type'] == 'PrimitiveBoolean'
+                    and 'lightning' in str(graph[i].get('_meta', {}).get('title', '')).lower()]
+        for node_id in switches:
+            if graph[node_id]['inputs'].get('value') is not True:
+                graph[node_id]['inputs']['value'] = True
+                changes.append(f'node {node_id} (PrimitiveBoolean) value: Lightning LoRA turned on (fewer steps, faster, slightly softer)')
+        if not switches:
+            changes.append('WARNING: --turbo found no "Enable Lightning LoRA" switch; the workflow is unchanged there')
+    found = placeholders_in(graph)
+    missing = [t for t in ('PROMPT', 'WIDTH', 'HEIGHT', 'FRAMES', 'SEED', 'OUTPUT_PREFIX') if t not in found]
+    if missing:
+        changes.append('WARNING: no ' + ', '.join('{{' + t + '}}' for t in missing) + ' in the workflow; add them by hand where they belong')
     return graph, changes
+
+
+def add_reference_slots(graph: dict, node_id: str, put: Callable[[str, str, str], None], changes: list[str]) -> None:
+    """Point each reference slot of an R2V node at a load node with {{IMAGE_n}} or {{AUDIO_n}}.
+    Slot ref_image_0 is <Picture 1> in the prompt and ref_audio_0 is <Audio 1>, matching the job's file order.
+    Missing load nodes are added; slots a job does not fill are removed before it is queued."""
+    inputs = graph[node_id]['inputs']
+    dotted = not any(REF_IMAGE_INPUT.match(k) and not k.startswith('ref_images.') for k in inputs)
+
+    def new_id() -> str:
+        n = 9001
+        while str(n) in graph:
+            n += 1
+        return str(n)
+    for pattern, group, slot, count, loaders, field, token, label in (
+        (REF_IMAGE_INPUT, 'ref_images', 'ref_image', MAX_REF_IMAGES, IMAGE_INPUT_NODES, 'image', 'IMAGE', 'LoadImage'),
+        (REF_AUDIO_INPUT, 'ref_audios', 'ref_audio', MAX_REF_AUDIO, AUDIO_INPUT_NODES, 'audio', 'AUDIO', 'LoadAudio'),
+    ):
+        existing = {int(m.group(2)): key for key in inputs if (m := pattern.match(key))}
+        added = []
+        for index in range(count):
+            key = existing.get(index, f'{group}.{slot}_{index}' if dotted else f'{slot}_{index}')
+            value = inputs.get(key)
+            if is_link(value):
+                source = upstream(graph, str(value[0]), loaders)
+                if source and isinstance(graph[source]['inputs'].get(field), str):
+                    put(source, field, f'{token}_{index + 1}')
+                else:
+                    changes.append(f'WARNING: {key} of node {node_id} is not fed by a {label} node; give it {{{{{token}_{index + 1}}}}} by hand')
+                continue
+            loader = new_id()
+            graph[loader] = {'class_type': label, 'inputs': {field: f'{{{{{token}_{index + 1}}}}}'}, '_meta': {'title': f'Sci-epo {slot.replace("_", " ")} {index + 1}'}}
+            inputs[key] = [loader, 0]
+            added.append(index + 1)
+        if added:
+            changes.append(f'node {node_id}: added {label} nodes for {{{{{token}_{added[0]}}}}}' + (f' to {{{{{token}_{added[-1]}}}}}' if len(added) > 1 else '')
+                           + '; slots a job does not use are removed before it is queued')
 
 
 # --------------------------------------------------------------------------- backends
@@ -713,6 +811,7 @@ def parser() -> argparse.ArgumentParser:
     prepare = modes.add_parser('prepare-workflow', help='add placeholders to a workflow exported with Export (API)')
     prepare.add_argument('--input', required=True)
     prepare.add_argument('--output', required=True)
+    prepare.add_argument('--turbo', action='store_true', help='turn on the template\'s Lightning LoRA switch: fewer steps, faster test renders')
     return root
 
 
@@ -720,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         if args.mode == 'prepare-workflow':
-            graph, changes = prepare_workflow(load_workflow(args.input) or {})
+            graph, changes = prepare_workflow(load_workflow(args.input) or {}, turbo=args.turbo)
             Path(args.output).write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding='utf-8')
             for line in changes:
                 log(line)

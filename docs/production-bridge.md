@@ -47,8 +47,10 @@ The worker queues a ComfyUI workflow in API format with placeholders:
 | `{{AUDIO_1}}` … `{{AUDIO_3}}` | voice samples |
 
 1. In ComfyUI, open the **MiniMax H3 T2V** template (and **MiniMax H3 R2V** if you use reference images) and choose **Workflow → Export (API)**.
-2. Run `python sciepo_worker.py prepare-workflow --input exported.json --output h3_t2v_api.json`. It replaces the longest text input with `{{PROMPT}}`, `width`/`height`/`length` with the size and frame placeholders, `seed`/`noise_seed` with `{{SEED}}`, `filename_prefix` with `{{OUTPUT_PREFIX}}`, and the `image`/`audio` inputs of load nodes with numbered placeholders. It prints every change; check them, and edit the JSON by hand where a guess is wrong.
-3. An R2V workflow can have more image slots than a clip needs. The worker removes the load nodes of unused slots and their links, so one workflow with several slots serves clips with one or two characters.
+2. Run `python sciepo_worker.py prepare-workflow --input exported.json --output h3_t2v_api.json`. It finds ComfyUI's native H3 node (`MiniMaxH3ImageToVideo` in the T2V template, `MiniMaxH3ReferenceToVideo` in the R2V template) and puts `{{PROMPT}}`, `{{WIDTH}}`, `{{HEIGHT}}` and `{{FRAMES}}` straight on it, so the template's prompt box, resolution selector and duration formula no longer apply. It also sets `noise_seed` to `{{SEED}}` and the save node's `filename_prefix` to `{{OUTPUT_PREFIX}}`, and prints every change.
+3. Add `--turbo` to turn on the template's Lightning LoRA switch: 4 sampling steps for R2V and 8 for T2V instead of 20. Test renders get faster and cheaper; motion and audio come out slightly softer.
+4. In an R2V workflow, reference slot `ref_image_0` is `<Picture 1>` in the prompt and `ref_audio_0` is `<Audio 1>`, the same order as the job's file lists. `prepare-workflow` gives each load node in the template the matching `{{IMAGE_n}}`, following links through resize nodes, and adds load nodes until there are 9 image slots and 3 voice-sample slots. Before queuing a job, the worker removes the slots that job does not use, with their links.
+5. A workflow without the native H3 nodes gets its placeholders guessed from input names (the longest text input, `width`, `height`, `length`, load nodes). Check those changes, and edit the JSON by hand where a guess is wrong.
 
 ## Mode A: job package
 
@@ -117,7 +119,7 @@ Results (`sciepo-render-results`, version 1): `batchId` and `results`, each with
 ## Status and limits
 
 - The planner, the server endpoints and the worker are covered by offline tests, the worker against simulated ComfyUI and Sci-epo servers. A render with the real H3 model has not been verified yet; the first real runs may need changes to the prompts or to `prepare-workflow`'s guesses.
-- `prepare-workflow` recognizes inputs by name. Workflows that use other names need the placeholders added by hand.
+- `prepare-workflow` was checked against the wiring of ComfyUI's official H3 T2V and R2V templates and the H3 node definitions, offline. Workflows built differently fall back to guesses by input name.
 - H3 can assign a line to the wrong speaker when several people talk in one clip. The shot list already warns about shots with more than one speaker; voice samples make the voices more stable.
 
 ## Sources

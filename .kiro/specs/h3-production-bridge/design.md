@@ -155,7 +155,7 @@ Standard library only, Python 3.10+.
 - `package --package FILE --out DIR`: render every job not already succeeded in `DIR/results.json`, rewriting the file after each job.
 - `pull --server URL --token TOKEN --out DIR [--wait]`: claim, render with a heartbeat thread, report; exit when nothing is queued unless `--wait`.
 - `serve --port 8765 --key KEY --out DIR`: `POST /v1/batches` accepts a package, `GET /v1/batches/<id>/results` returns the results file, `GET /v1/health`; jobs render one at a time in a background thread.
-- `prepare-workflow --input API.json --output OUT.json`: replace the longest text input of a text-encode or H3 node with `{{PROMPT}}`, and `width`, `height`, `length`, `seed`/`noise_seed`, `filename_prefix` and the image or audio inputs of load nodes with their placeholders; print each change.
+- `prepare-workflow --input API.json --output OUT.json [--turbo]`: on ComfyUI's native H3 nodes (`MiniMaxH3ImageToVideo`, `MiniMaxH3ReferenceToVideo`), set `prompt`, `width`, `height` and `length` to placeholders directly, bypassing the official templates' prompt box, resolution selector and duration formula; map R2V slots `ref_images.ref_image_k` and `ref_audios.ref_audio_k` to `{{IMAGE_k+1}}` and `{{AUDIO_k+1}}`, following links through resize nodes, and add load nodes for missing slots (9 images, 3 audio). Seeds and `filename_prefix` get their placeholders in every workflow; `--turbo` turns on the templates' Lightning LoRA switch. Without an H3 node, guess by input names. Print each change.
 
 Backends:
 

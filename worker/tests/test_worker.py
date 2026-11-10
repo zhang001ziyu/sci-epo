@@ -32,23 +32,57 @@ def package(jobs):
     return {'format': w.PACKAGE_FORMAT, 'version': 1, 'batch': {'id': 'b1'}, 'model': {'name': 'MiniMax H3'}, 'references': {'images': [], 'audio': []}, 'jobs': jobs}
 
 
+LIGHTNING = {'title': 'Boolean (Enable Lightning LoRA)'}
+# The wiring of ComfyUI's official H3 templates as Export (API) writes them, with neutral values.
+# T2V wraps the H3 node in a subgraph, so its inner nodes have ids like '140:131'.
 T2V = {
+    '92': {'class_type': 'SaveVideo', 'inputs': {'filename_prefix': 'video/MiniMax_H3', 'format': 'auto', 'codec': 'auto', 'video': ['140:130', 0]}},
+    '115': {'class_type': 'ResolutionSelector', 'inputs': {'aspect_ratio': '16:9 (Widescreen)', 'megapixels': 0.4, 'multiple': 32}},
+    '140:119': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'video_vae.safetensors'}},
+    '140:120': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'audio_vae.safetensors'}},
+    '140:121': {'class_type': 'VAEDecodeAudio', 'inputs': {'samples': ['140:125', 0], 'vae': ['140:120', 0]}},
+    '140:122': {'class_type': 'VAEDecode', 'inputs': {'samples': ['140:125', 0], 'vae': ['140:119', 0]}},
+    '140:125': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['140:129', 0], 'latent_image': ['140:131', 1]}},
+    '140:128': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'text_encoder.safetensors', 'type': 'minimax', 'device': 'default'}},
+    '140:129': {'class_type': 'RandomNoise', 'inputs': {'noise_seed': 757358688076805}},
+    '140:130': {'class_type': 'CreateVideo', 'inputs': {'fps': 24, 'images': ['140:122', 0], 'audio': ['140:121', 0]}},
+    '140:131': {'class_type': 'MiniMaxH3ImageToVideo', 'inputs': {'prompt': 'a template prompt about a title sequence', 'width': ['115', 0], 'height': ['115', 1], 'length': ['140:132', 1], 'clip': ['140:128', 0], 'vae': ['140:119', 0]}},
+    '140:132': {'class_type': 'ComfyMathExpression', 'inputs': {'expression': 'max(5, round(a * 24))', 'values.a': ['140:133', 0]}},
+    '140:133': {'class_type': 'PrimitiveFloat', 'inputs': {'value': 2}, '_meta': {'title': 'Float (duration)'}},
+    '140:139': {'class_type': 'PrimitiveBoolean', 'inputs': {'value': False}, '_meta': LIGHTNING},
+}
+# R2V keeps the H3 node in the main graph: the prompt comes from a text box, the size from a resolution
+# selector and the frame count from a duration formula. An ImageScale sits in front of the second slot.
+R2V = {
+    '10': {'class_type': 'ImageScale', 'inputs': {'image': ['139', 0], 'upscale_method': 'lanczos', 'width': 512, 'height': 512, 'crop': 'disabled'}},
+    '92': {'class_type': 'SaveVideo', 'inputs': {'filename_prefix': 'video/MiniMax_H3', 'format': 'auto', 'codec': 'auto', 'video': ['130', 0]}},
+    '115': {'class_type': 'ResolutionSelector', 'inputs': {'aspect_ratio': '16:9 (Widescreen)', 'megapixels': 0.4, 'multiple': 32}},
+    '119': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'video_vae.safetensors'}},
+    '120': {'class_type': 'VAELoader', 'inputs': {'vae_name': 'audio_vae.safetensors'}},
+    '121': {'class_type': 'VAEDecodeAudio', 'inputs': {'samples': ['125', 0], 'vae': ['120', 0]}},
+    '122': {'class_type': 'VAEDecode', 'inputs': {'samples': ['125', 0], 'vae': ['119', 0]}},
+    '125': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['129', 0], 'latent_image': ['136', 1]}},
+    '128': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'text_encoder.safetensors', 'type': 'minimax', 'device': 'default'}},
+    '129': {'class_type': 'RandomNoise', 'inputs': {'noise_seed': 261662374822964}},
+    '130': {'class_type': 'CreateVideo', 'inputs': {'fps': 24, 'images': ['122', 0], 'audio': ['121', 0]}},
+    '131': {'class_type': 'ComfyMathExpression', 'inputs': {'expression': 'max(5, round(a * 24))', 'values.a': ['132', 0]}},
+    '132': {'class_type': 'PrimitiveFloat', 'inputs': {'value': 5}, '_meta': {'title': 'Float (Duration)'}},
+    '136': {'class_type': 'MiniMaxH3ReferenceToVideo', 'inputs': {'prompt': ['138', 0], 'width': ['115', 0], 'height': ['115', 1], 'length': ['131', 1], 'ref_image_size': 'match',
+            'clip': ['128', 0], 'vae': ['119', 0], 'audio_vae': ['120', 0], 'ref_images.ref_image_0': ['137', 0], 'ref_images.ref_image_1': ['10', 0]}},
+    '137': {'class_type': 'LoadImage', 'inputs': {'image': 'hero.png'}},
+    '138': {'class_type': 'PrimitiveStringMultiline', 'inputs': {'value': 'a template prompt with two reference pictures'}, '_meta': {'title': 'Input Text (Prompt)'}},
+    '139': {'class_type': 'LoadImage', 'inputs': {'image': 'friend.png'}},
+    '146': {'class_type': 'PrimitiveBoolean', 'inputs': {'value': False}, '_meta': LIGHTNING},
+}
+# A workflow without the native H3 nodes, where placeholders are guessed from input names.
+GENERIC = {
     '3': {'class_type': 'KSampler', 'inputs': {'seed': 7, 'model': ['4', 0], 'positive': ['6', 0], 'latent_image': ['5', 0]}},
-    '4': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'minimax_h3.safetensors'}},
-    '5': {'class_type': 'MiniMaxH3Latent', 'inputs': {'width': 1344, 'height': 768, 'length': 124}},
+    '4': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'video.safetensors'}},
+    '5': {'class_type': 'EmptyVideoLatent', 'inputs': {'width': 1344, 'height': 768, 'length': 124}},
     '6': {'class_type': 'CLIPTextEncode', 'inputs': {'text': 'a long default prompt about a bakery at sunrise', 'clip': ['7', 0]}},
-    '7': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'qwen3vl.safetensors'}},
+    '7': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'text_encoder.safetensors'}},
     '8': {'class_type': 'CLIPTextEncode', 'inputs': {'text': 'short', 'clip': ['7', 0]}},
     '9': {'class_type': 'SaveVideo', 'inputs': {'filename_prefix': 'video/h3', 'video': ['3', 0]}},
-}
-R2V = {
-    '1': {'class_type': 'LoadImage', 'inputs': {'image': 'hero.png'}},
-    '2': {'class_type': 'LoadImage', 'inputs': {'image': 'friend.png'}},
-    '10': {'class_type': 'ImageScale', 'inputs': {'image': ['2', 0], 'width': 512, 'height': 512}},
-    '11': {'class_type': 'MiniMaxH3ReferenceToVideo', 'inputs': {'positive': ['6', 0], 'ref_image_0': ['1', 0], 'ref_image_1': ['10', 0], 'width': 768, 'height': 1344, 'length': 124}},
-    '6': {'class_type': 'CLIPTextEncode', 'inputs': {'text': 'reference prompt that is the longest text here', 'clip': ['7', 0]}},
-    '7': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'qwen3vl.safetensors'}},
-    '9': {'class_type': 'SaveVideo', 'inputs': {'filename_prefix': 'video/h3', 'video': ['11', 0]}},
 }
 
 
@@ -165,27 +199,65 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(w.WorkerError):
             w.substitute({'a': '{{IMAGE_2}}'}, {}, set())
 
-    def test_prepare_workflow_marks_prompt_size_frames_seed_output_and_references(self):
+    def test_official_t2v_template_gets_its_values_on_the_h3_node_inside_the_subgraph(self):
         graph, changes = w.prepare_workflow(T2V)
+        h3 = graph['140:131']['inputs']
+        self.assertEqual((h3['prompt'], h3['width'], h3['height'], h3['length']), ('{{PROMPT}}', '{{WIDTH}}', '{{HEIGHT}}', '{{FRAMES}}'))
+        self.assertEqual(graph['140:129']['inputs']['noise_seed'], '{{SEED}}')
+        self.assertEqual(graph['92']['inputs']['filename_prefix'], '{{OUTPUT_PREFIX}}')
+        self.assertEqual(graph['140:133']['inputs']['value'], 2)
+        self.assertEqual(graph['140:139']['inputs']['value'], False)
+        self.assertFalse([line for line in changes if 'WARNING' in line], changes)
+        self.assertTrue(any("width: 'link from node 115' -> {{WIDTH}}" in line for line in changes), changes)
+        turbo, changes = w.prepare_workflow(T2V, turbo=True)
+        self.assertIs(turbo['140:139']['inputs']['value'], True)
+        self.assertTrue(any('Lightning LoRA turned on' in line for line in changes))
+
+    def test_official_r2v_template_maps_reference_slots_and_adds_the_missing_ones(self):
+        graph, changes = w.prepare_workflow(R2V)
+        h3 = graph['136']['inputs']
+        self.assertEqual((h3['prompt'], h3['width'], h3['height'], h3['length']), ('{{PROMPT}}', '{{WIDTH}}', '{{HEIGHT}}', '{{FRAMES}}'))
+        self.assertEqual(graph['137']['inputs']['image'], '{{IMAGE_1}}')
+        self.assertEqual(graph['139']['inputs']['image'], '{{IMAGE_2}}')
+        self.assertEqual(graph['10']['inputs']['width'], 512)
+        self.assertEqual(graph['138']['inputs']['value'], 'a template prompt with two reference pictures')
+        for index in range(2, 9):
+            loader = graph[str(h3[f'ref_images.ref_image_{index}'][0])]
+            self.assertEqual(loader, {'class_type': 'LoadImage', 'inputs': {'image': f'{{{{IMAGE_{index + 1}}}}}'}, '_meta': {'title': f'Sci-epo ref image {index + 1}'}})
+        for index in range(3):
+            loader = graph[str(h3[f'ref_audios.ref_audio_{index}'][0])]
+            self.assertEqual(loader['class_type'], 'LoadAudio')
+            self.assertEqual(loader['inputs'], {'audio': f'{{{{AUDIO_{index + 1}}}}}'})
+        self.assertEqual(graph['129']['inputs']['noise_seed'], '{{SEED}}')
+        self.assertFalse([line for line in changes if 'WARNING' in line], changes)
+        again, changes = w.prepare_workflow(graph)
+        self.assertEqual(again, graph)
+        self.assertEqual(changes, [])
+        self.assertIs(w.prepare_workflow(R2V, turbo=True)[0]['146']['inputs']['value'], True)
+
+    def test_other_workflows_fall_back_to_input_names(self):
+        graph, changes = w.prepare_workflow(GENERIC)
         self.assertEqual(graph['6']['inputs']['text'], '{{PROMPT}}')
         self.assertEqual(graph['8']['inputs']['text'], 'short')
         self.assertEqual(graph['5']['inputs'], {'width': '{{WIDTH}}', 'height': '{{HEIGHT}}', 'length': '{{FRAMES}}'})
         self.assertEqual(graph['3']['inputs']['seed'], '{{SEED}}')
         self.assertEqual(graph['9']['inputs']['filename_prefix'], '{{OUTPUT_PREFIX}}')
-        self.assertTrue(any('{{PROMPT}}' in line for line in changes))
-        r2v, _ = w.prepare_workflow(R2V)
-        self.assertEqual((r2v['1']['inputs']['image'], r2v['2']['inputs']['image']), ('{{IMAGE_1}}', '{{IMAGE_2}}'))
+        self.assertTrue(any('no MiniMax H3 node found' in line for line in changes))
+        _, changes = w.prepare_workflow(GENERIC, turbo=True)
+        self.assertTrue(any('--turbo found no' in line for line in changes))
         with self.assertRaises(w.WorkerError):
             w.prepare_workflow({'nodes': [], 'links': []})
 
     def test_unused_reference_slots_are_pruned_with_their_links(self):
         r2v, _ = w.prepare_workflow(R2V)
-        pruned = w.prune_missing_references(r2v, {'PROMPT', 'IMAGE_1'})
-        self.assertNotIn('2', pruned)
+        pruned = w.prune_missing_references(r2v, {'PROMPT', 'WIDTH', 'HEIGHT', 'FRAMES', 'SEED', 'OUTPUT_PREFIX', 'IMAGE_1'})
+        self.assertNotIn('139', pruned)
         self.assertNotIn('10', pruned)
-        self.assertNotIn('ref_image_1', pruned['11']['inputs'])
-        self.assertEqual(pruned['11']['inputs']['ref_image_0'], ['1', 0])
-        self.assertIn('9', pruned)
+        self.assertEqual([k for k in pruned['136']['inputs'] if k.startswith('ref_')], ['ref_image_size', 'ref_images.ref_image_0'])
+        self.assertEqual(pruned['136']['inputs']['ref_images.ref_image_0'], ['137', 0])
+        self.assertFalse([n for n in pruned.values() if n['class_type'] in ('LoadImage', 'LoadAudio') and n is not pruned['137']])
+        self.assertIn('92', pruned)
+        self.assertEqual(w.placeholders_in(pruned) - {'PROMPT', 'WIDTH', 'HEIGHT', 'FRAMES', 'SEED', 'OUTPUT_PREFIX', 'IMAGE_1'}, set())
 
 
 class ComfyUITests(unittest.TestCase):
@@ -209,10 +281,10 @@ class ComfyUITests(unittest.TestCase):
             backend = self.backend(comfy)
             entry = backend.render(job(), self.dir / 'out')
             graph = comfy.graphs[0]
-            self.assertEqual(graph['6']['inputs']['text'], job()['prompt'])
-            self.assertEqual(graph['5']['inputs'], {'width': 768, 'height': 1344, 'length': 124})
-            self.assertEqual(graph['3']['inputs']['seed'], 42)
-            self.assertEqual(graph['9']['inputs']['filename_prefix'], 'sciepo/ep01-c01-en')
+            h3 = graph['140:131']['inputs']
+            self.assertEqual((h3['prompt'], h3['width'], h3['height'], h3['length']), (job()['prompt'], 768, 1344, 124))
+            self.assertEqual(graph['140:129']['inputs']['noise_seed'], 42)
+            self.assertEqual(graph['92']['inputs']['filename_prefix'], 'sciepo/ep01-c01-en')
             self.assertEqual(entry['status'], 'succeeded')
             self.assertEqual(entry['file'], 'ep01-c01-en.mp4')
             self.assertEqual(entry['sha256'], hashlib.sha256(VIDEO).hexdigest())
@@ -220,8 +292,12 @@ class ComfyUITests(unittest.TestCase):
             r2v = backend.render(job(id='j2', mode='r2v', images=['maya.png'], output='ep01-c01-zh-CN.mp4'), self.dir / 'out')
             self.assertEqual(r2v['status'], 'succeeded')
             self.assertEqual(comfy.uploads, ['maya.png'])
-            self.assertEqual(comfy.graphs[1]['1']['inputs']['image'], 'maya.png')
-            self.assertNotIn('2', comfy.graphs[1])
+            sent = comfy.graphs[1]
+            self.assertEqual(sent['137']['inputs']['image'], 'maya.png')
+            self.assertNotIn('139', sent)
+            self.assertEqual([k for k in sent['136']['inputs'] if k.startswith('ref_images.')], ['ref_images.ref_image_0'])
+            self.assertEqual((sent['136']['inputs']['width'], sent['136']['inputs']['height'], sent['136']['inputs']['length']), (768, 1344, 124))
+            self.assertNotIn('{{', json.dumps(sent))
         finally:
             comfy.close()
 
