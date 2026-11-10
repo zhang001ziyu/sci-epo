@@ -1,0 +1,116 @@
+{
+  "revision": {
+    "title": "A Drift in the Stack",
+    "logline": "Before a batch of unlogged station scrap clears out into the dark, a meticulous lost-property clerk gives a guarded technician one quiet opportunity to retrieve his mother's damaged voice chip.",
+    "scenes": [
+      {
+        "id": "s1",
+        "heading": "INT. ORBITAL STATION - LOST PROPERTY INTAKE - NIGHT",
+        "content": "Fluorescent tubes hum low over stainless-steel bins. LIN (40s), steady-handed and wearing an oiled canvas apron, sorts tagged debris into color-coded trays. \n\nOn the counter sits a transparent specimen envelope holding a singed copper-rimmed storage chip, marked T-09.\n\nADU (30s), in a soot-stained flight suit with grease under his fingernails, leans against the hatch frame with a thermal mug in hand. He watches Lin log the weight.\n\nLIN\nIntake batch forty-one. Unclaimed tech found during deck six conduit flush.\n\nADU\nJust furnace feed. Nothing worth an entry.\n\nLIN\n(Without looking up)\nOne solid-state audio chip. Corroded pins, heat-stressed substrate. Logged under salvage waiver.\n\nAdu shifts his weight. He does not take a sip from his mug.\n\nADU\nThen dump it in the hopper. Shift ends in twenty minutes.\n\nLIN\nThe waiver says you flagged the conduit filter yourself yesterday morning. You brought the tray down.\n\nADU\nStandard purge protocol. Dust, dead fuses, loose screws. I didn't inventory every scrap.\n\nLin sets her stylus down. She turns the envelope toward him, just enough so the chipped casing faces the light.\n\nLIN\nThe label on the casing is handwritten in pencil. \"E-14 voice spool, 2198.\" Not standard issue.\n\nADU\nPencil fades in vacuum anyway. Why keep what’s already ruined?\n\nLIN\nIt has three damaged sectors, but the core coil still has continuity. One read-head sweep could pull whatever track is left.\n\nADU\nI didn't ask for a sweep.\n\nLIN\nI didn't run one. It's your salvage report.\n\nA chime pulses through the bulkhead. An automated voice buzzes through a speaker overhead.\n\nAUTOMATED VOICE (V.O.)\nWaste chamber pre-purge cycle initiated. Ten minutes to vent sequence.\n\nAdu looks toward the hall, his jaw tightening.",
+        "locked": false
+      },
+      {
+        "id": "s2",
+        "heading": "INT. ORBITAL STATION - WASTE DISPOSAL CORRIDOR - NIGHT",
+        "content": "Lin walks with the bagged chip on a flat clipboard, her boots clacking against the grooved floor plates. Adu follows two paces behind, wrench harness swinging against his hip.\n\nThey stop at the heavy pneumatic seal of the WASTE CHAMBER. A red status bar fills across the access panel: 07:18 UNTIL VENT.\n\nADU\nYou brought it all the way out here just to make me watch it go?\n\nLIN\nProcedure requires manual confirmation on flagged salvage from crew quarters.\n\nADU\nI told the log system: unassigned debris.\n\nLIN\nWhich takes it directly to the incinerator chute.\n\nLin steps to the terminal and keys her credentials. A yellow prompt blinks: MANUAL OVERRIDE AVAILABLE - RESCHEDULE VENT (CONSUMES CYCLE WINDOW: 1).\n\nLIN (CONT'D)\nIf I pull the abort key, the hatch stays locked until tomorrow's shift. But station control loses tonight's maintenance clearance on the line.\n\nAdu stares at the blinking yellow prompt.\n\nADU\nI don't need a favor on station time.\n\nLIN\nIt's not a favor. It’s an option. Once it vents, there are no duplicates. No cloud sync out here. You know that.\n\nADU\nI know what’s on it. An eight-minute birthday message from six years ago. Before she stopped talking altogether.\n\nHe stops, gripping the railing along the wall.\n\nADU (CONT'D)\nEvery time I pack my bunk for transfer, I think about listening. Then I don't. Keeping a fried chip in a drawer doesn't change what’s gone, Lin.\n\nLIN\nI'm not asking you to listen to it.\n\nADU\nThen what are you doing?\n\nLIN\nMaking sure you're the one who decides, not the disposal clock.",
+        "locked": false
+      },
+      {
+        "id": "s3",
+        "heading": "INT. ORBITAL STATION - WASTE CHAMBER HATCH - CONTINUOUS",
+        "content": "The red countdown reaches 02:40. Inside the hatch observation port, cold air mist begins to circulate around the drop chute.\n\nLin holds the envelope out between them. Her posture remains neutral, neither offering nor withholding.\n\nAdu looks from the scorched chip to Lin's fingers, then to the yellow abort button on the panel.\n\nHis thumb traces the worn edge of his utility wrench. Seconds tick by on the bulkhead display.\n\nAUTOMATED VOICE (V.O.)\nChamber pressure dropping. Clear hatch zone.\n\nAdu takes a breath. His shoulders drop an inch.\n\nADU\nDrop it in the chute.\n\nLin looks at him. Adu’s face is tight, but he meets her eyes without glancing away.\n\nLIN\nYou don't want the override.\n\nADU\nNo.\n\nHe extends his bare hand, not toward the terminal, but toward the envelope. He takes the chip from her fingers, turns, and slides it into the manual disposal slot himself.\n\nThe steel flap clatters shut. A mechanical whoosh echoes through the pipe as the seal locks.\n\nThrough the thick quartz glass, the tiny square of plastic and copper drops into the gathering mist, vanishing into the darkness below.\n\nA chime sounds: VENT COMPLETE.\n\nLin enters her clearance code, clearing the red bar from the console. The station corridor settles back into silence, save for the dull vibration of the life-support fans.\n\nLIN\nLog closed.\n\nADU\nYeah.\n\nAdu stands by the glass for a beat, his hands resting loose at his sides. He turns back toward the service corridor.\n\nADU (CONT'D)\nHot water's still on in the mess hall. I can get you a tea before shift change.\n\nLIN\nGreen tea, if they restocked it.\n\nADU\nThey didn't. It's roast barley.\n\nLIN\nThat's fine too.\n\nLin hangs her clipboard back on her belt and steps alongside him as they walk away into the quiet spine of the station.",
+        "locked": false
+      }
+    ],
+    "language": "en",
+    "parentId": null,
+    "kind": "generated",
+    "context": {
+      "brief": {
+        "title": "失物轨道 · 英文真实流程验证",
+        "premise": "Write a complete English screenplay for a short science-fiction animation, 450–650 words in 3 scenes. At an orbital station, a lost-property clerk has one last chance to help a technician recover a storage chip containing a message from his late mother. He insists he has lost nothing. Let conflicting wants drive observable choices, with room for an understated ending.",
+        "characters": "Lin: the lost-property clerk; precise about objects, but willing to stop and listen when someone refuses help. Adu: a maintenance technician; defensive and practical. He says keeping his mother's recording stops him moving on, yet he has never confirmed its deletion. They are ordinary colleagues, with no romance. Give them distinct, restrained voices.",
+        "worldRules": "The recording exists only on one damaged storage chip. No cloud backup, duplicate, resurrection, or magical repair is possible. Before the waste chamber clears, one manual cancellation is possible, at the cost of tonight's only maintenance window. Characters act only on things they observe or are told.",
+        "authorRules": "Use actions, pauses, and specific choices instead of explaining emotions or summarizing a theme. Lin cannot decide for Adu whether to preserve the recording. Do not require the mother's voice to play in the ending. No forced twist, exposition lecture, or new technology that removes the cost. All screenplay text, dialogue, title, headings and logline must be in English.",
+        "language": "en",
+        "glossary": "Lin / 林禾; Adu / 阿渡; orbital station / 轨道站; waste chamber / 废物舱."
+      },
+      "previousEpisodes": [],
+      "hash": "0328cef108a2c00724bba278968f324314872a12d6c0acfb01e0be663c143630"
+    },
+    "instruction": "",
+    "mode": "live",
+    "id": "8c2e4482-c236-490f-8a36-e66310382733",
+    "episodeId": "eec673ef-ef58-467c-8e46-e884ec1ca1cd",
+    "createdAt": "2026-11-06T05:29:28.919Z"
+  },
+  "legacyReview": {
+    "assessments": [
+      {
+        "dimension": "story",
+        "status": "no_issue",
+        "explanation": "剧本严格遵循了诉求冲突驱动行动的要求。阿杜声称没有丢失任何东西并试图规避面对，林则通过程序赋予其最后一次决定的机会。阿杜最终选择亲手销毁芯片，用具体动作完成了情感割舍，结尾落于日常对话，符合克制收尾的要求。",
+        "evidence": [
+          {
+            "sourceId": "brief",
+            "sourceQuote": "At an orbital station, a lost-property clerk has one last chance to help a technician recover a storage chip containing a message from his late mother. He insists he has lost nothing. Let conflicting wants drive observable choices, with room for an understated ending.",
+            "sceneId": "s3",
+            "draftQuote": "He extends his bare hand, not toward the terminal, but toward the envelope. He takes the chip from her fingers, turns, and slides it into the manual disposal slot himself."
+          }
+        ]
+      },
+      {
+        "dimension": "character",
+        "status": "no_issue",
+        "explanation": "林始终保持失物招领员的严谨与克制，在最后一刻保持中立姿态，未越俎代庖替阿杜做决定；阿杜的防御性与自主选择完全由其自身行动体现，两人关系维持普通同事分寸，无浪漫或失真越界。",
+        "evidence": [
+          {
+            "sourceId": "authorRules",
+            "sourceQuote": "Lin cannot decide for Adu whether to preserve the recording.",
+            "sceneId": "s3",
+            "draftQuote": "Lin holds the envelope out between them. Her posture remains neutral, neither offering nor withholding."
+          }
+        ]
+      },
+      {
+        "dimension": "dialogue",
+        "status": "no_issue",
+        "explanation": "对白短促、自然且克制，没有出现阐释世界观或直白宣讲主题的台词；结尾关于茶水间热水的交谈通过日常琐碎体现情绪平复，角色的口吻区别明显，符合设定。",
+        "evidence": [
+          {
+            "sourceId": "characters",
+            "sourceQuote": "Give them distinct, restrained voices.",
+            "sceneId": "s3",
+            "draftQuote": "ADU (CONT'D)\nHot water's still on in the mess hall. I can get you a tea before shift change.\n\nLIN\nGreen tea, if they restocked it.\n\nADU\nThey didn't. It's roast barley.\n\nLIN\nThat's fine too."
+          }
+        ]
+      },
+      {
+        "dimension": "continuity",
+        "status": "no_issue",
+        "explanation": "各场景间的事实与物理规则严密连贯。倒计时从第1场的10分钟预警、第2场的07:18递减至第3场的02:40；取消排气将消耗维护窗口的代价也严格承袭了世界规则设定，芯片的物理移动轨迹清晰确凿。",
+        "evidence": [
+          {
+            "sourceId": "worldRules",
+            "sourceQuote": "Before the waste chamber clears, one manual cancellation is possible, at the cost of tonight's only maintenance window.",
+            "sceneId": "s2",
+            "draftQuote": "If I pull the abort key, the hatch stays locked until tomorrow's shift. But station control loses tonight's maintenance clearance on the line."
+          }
+        ]
+      },
+      {
+        "dimension": "filmability",
+        "status": "no_issue",
+        "explanation": "全剧没有无法拍摄的内心抽象独白，所有关键信息（如倒计时、芯片外观特征、仓门警示提示、排气雾气）都通过可被摄影机捕捉的视觉界面与物理动作予以呈现。",
+        "evidence": [
+          {
+            "sourceId": "authorRules",
+            "sourceQuote": "Use actions, pauses, and specific choices instead of explaining emotions or summarizing a theme.",
+            "sceneId": "s3",
+            "draftQuote": "Through the thick quartz glass, the tiny square of plastic and copper drops into the gathering mist, vanishing into the darkness below."
+          }
+        ]
+      }
+    ]
+  }
+}
