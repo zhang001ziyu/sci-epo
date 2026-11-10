@@ -6,8 +6,11 @@ export type Format = 'vertical_short_drama' | 'episodic';
 export interface DurationTarget { min: number; max: number }
 export interface Brief { title: string; premise: string; characters: string; worldRules: string; authorRules: string; language?: string; glossary?: string; lengthTarget?: LengthTarget; format?: Format; durationTarget?: DurationTarget }
 export interface PublicationSettings { audioLanguage: string; subtitleLanguages: string[]; subtitleStyle: 'selectable'|'burned-bilingual'|'none'; platform: 'youtube'|'bilibili'|'general' }
-/** voiceLanguages is a production setting outside the frozen brief: changing it never requires a story recheck. */
-export interface Project extends Brief { id: string; createdAt: string; updatedAt: string; publication?: PublicationSettings; voiceLanguages?: string[] }
+/** How a series looks and sounds on screen. English free text, because H3 expects English prompt bodies. */
+export interface ProductionCharacter { name: string; appearance: string; voice: string; image?: string; voiceSample?: string }
+export interface ProductionProfile { style: string; music: string; characters: ProductionCharacter[] }
+/** voiceLanguages and production are settings outside the frozen brief: changing them never requires a story recheck. */
+export interface Project extends Brief { id: string; createdAt: string; updatedAt: string; publication?: PublicationSettings; voiceLanguages?: string[]; production?: ProductionProfile }
 export interface Episode { id: string; projectId: string; ordinal: number; title: string; acceptedRevisionId: string | null; needsReview: boolean; createdAt: string; contextToken?: string; productionShotListId?: string }
 export interface Scene { id: string; heading: string; content: string; locked: boolean }
 export interface ContextSnapshot { brief: Brief; previousEpisodes: { episodeId: string; ordinal: number; revisionId: string; title: string; scenes: Scene[] }[]; hash: string }
@@ -33,7 +36,16 @@ export interface Shot { id: string; sceneId: string; firstLine: number; lastLine
 export interface ShotListContent { cast: CastMember[]; shots: Shot[] }
 /** An immutable shot-list version bound to one revision and, per extra voice language, one line-aligned adaptation. */
 export interface ShotList extends ShotListContent { id: string; episodeId: string; sourceRevisionId: string; parentId: string | null; aspectRatio: '9:16' | '16:9'; voiceLanguages: string[]; adaptations: Record<string, string>; mode: ProviderMode; createdAt: string }
-export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[] }
+/** One H3 prompt of one clip in one voice language, with reference files in the order the worker passes them. */
+export interface RenderPrompt { mode: 't2va' | 'r2v'; text: string; images: string[]; audio: string[] }
+export interface RenderClip { id: string; sceneId: string; shotIds: string[]; plannedSeconds: number; frames: number; seed: number; warnings: string[]; prompts: Record<string, RenderPrompt> }
+/** An immutable render plan made from one production shot list. Video files stay with the worker. */
+export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string }
+export interface RenderOutput { file: string; seconds?: number; bytes?: number; sha256?: string }
+export interface RenderJob { id: string; batchId: string; clipId: string; language: string; order: number; status: 'queued' | 'claimed' | 'succeeded' | 'failed'; attempts: number; workerTokenId?: string; workerLabel?: string; leaseExpiresAt?: string; output?: RenderOutput; error?: string; updatedAt: string }
+/** Only the SHA-256 of a worker token is stored. */
+export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
+export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
 export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard'; context: ContextSnapshot; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

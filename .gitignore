@@ -7,3 +7,5 @@ data/
 *.log
 artifacts/
 .DS_Store
+__pycache__/
+*.pyc

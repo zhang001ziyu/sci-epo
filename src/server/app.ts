@@ -7,6 +7,7 @@ import { Auth, AuthError } from './auth';
 import { ProviderManager, ProviderAdminError } from './providerManager';
 import { alignLocalization, defaultPublication, exportLocalization, languageName, languageTag, notesLanguage, publicationSettings, scriptLanguage } from '../core/languages';
 import { currentAdaptation } from '../core/manuscripts';
+import { Production, type ProductionOptions } from './production';
 import { reviewSuggestion } from '../core/reviewSuggestions';
 import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
@@ -28,8 +29,9 @@ function formatFields(b:Record<string,unknown>,stored?:Brief):Pick<Brief,'format
  try{return {format,durationTarget:raw===undefined||raw===null?{...DEFAULT_DURATION_TARGET}:parseDurationTarget(raw)};}catch(error){return fail(400,error instanceof Error?error.message:'目标时长无效。');}
 }
 function brief(value:unknown,stored?:Brief):Brief {const b=obj(value);const format=formatFields(b,stored);let lengthTarget;try {if(b.lengthTarget!==undefined&&b.lengthTarget!==null)lengthTarget=parseLengthTarget(b.lengthTarget);}catch(error){return fail(400,error instanceof Error?error.message:'篇幅范围无效。');}return {title:str(b.title,'系列标题',200),premise:str(b.premise,'故事前提'),characters:str(b.characters,'人物资料',30000,true),worldRules:str(b.worldRules,'世界规则',30000,true),authorRules:str(b.authorRules,'作者要求',30000,true),...(b.language!==undefined?{language:validLanguage(b.language)}:{}),...(b.glossary!==undefined?{glossary:str(b.glossary,'术语表',30000,true)}:{}),...(lengthTarget?{lengthTarget}:{}),...format};}
-export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:{publicOrigin?:string}={}) {
+export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:{publicOrigin?:string;production?:ProductionOptions}={}) {
  const auth=options.publicOrigin?new Auth(store.db,options.publicOrigin):undefined;
+ const production=new Production(store,fail,id,options.production);
  function project(pid:string){return store.get('projects',pid)??fail(404,'找不到系列。');}
  function episode(eid:string){return store.get('episodes',eid)??fail(404,'找不到集数。');}
  function revision(rid:string){return store.get('revisions',rid)??fail(404,'找不到剧本版本。');}
@@ -201,6 +203,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    const versions=languages.map(language=>({language,sourceRevisionId:r.id,localizationId:language===scriptLanguage(r)?null:store.all('localizations').filter(l=>l.sourceRevisionId===r.id&&l.language===language).at(-1)?.id??null,available:language===scriptLanguage(r)||store.all('localizations').some(l=>l.sourceRevisionId===r.id&&l.language===language)}));
    return new Response(JSON.stringify({schemaVersion:1,project:p.title,episode:e.title,sourceRevisionId:r.id,sourceLanguage:scriptLanguage(r),sourceAccepted:e.acceptedRevisionId===r.id&&!e.needsReview,settings,versions,productionStatus:'planning_only',pending:['语言版本由作者复核','配音与画面制作','按最终配音和剪辑对齐字幕时间轴'],timedSubtitlesAvailable:false},null,2),{headers:{'content-type':'application/json','content-disposition':`attachment; filename="sci-epo-publication-${r.id}.json"`}});
   }
+  if(method==='GET'){const handled=production.get(a,target,action);if(handled!==undefined)return handled;}
   if(!['POST','PUT'].includes(method))return fail(404,'未找到接口。');
   if(!req.headers.get('content-type')?.toLowerCase().startsWith('application/json'))return fail(415,'请使用 JSON 请求。');
   const bodyText=await req.text(); if(bodyText.length>250000)return fail(413,'内容过长，请分集保存。');
@@ -343,6 +346,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
     return saveRevision(e,{title:r.title,logline:r.logline,scenes:r.scenes.map(s=>s.id===sid?{...s,locked:body.locked as boolean}:s),language:scriptLanguage(r),parentId:r.id,kind:'manual',context:r.context,instruction:body.locked?'锁定场景':'解锁场景',mode:r.mode});
    }
   }
+  const handled=await production.post(method,a,target,action,body);if(handled!==undefined)return handled;
   return fail(404,'未找到接口。');
  }
  return async function fetch(req:Request):Promise<Response>{
@@ -351,13 +355,17 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   try{
    if(auth?url.host!==new URL(auth.origin).host:!['127.0.0.1','localhost','[::1]'].includes(url.hostname))return fail(403,'请求域名不正确。');
    const write=!['GET','HEAD'].includes(req.method),origin=req.headers.get('origin'),expectedOrigin=auth?.origin??url.origin;
-   if((origin&&origin!==expectedOrigin)||(auth&&write&&origin!==expectedOrigin))return fail(403,'不接受跨站请求。');
+   // Workers authenticate with a bearer token, not a cookie, so their writes carry no Origin and need no CSRF token.
+   // A browser still sends Origin, and a foreign one is refused everywhere.
+   const workerPath=url.pathname.startsWith('/api/worker/v1/');
+   if((origin&&origin!==expectedOrigin)||(auth&&write&&!workerPath&&origin!==expectedOrigin))return fail(403,'不接受跨站请求。');
    let response:Response;
    if(url.pathname==='/api/auth/session'&&req.method==='GET'){
     const session=auth?.session(req);response=auth?(session?Response.json({email:session.email,csrf:session.csrf}):Response.json({error:'请先登录创作空间。'},{status:401})):Response.json({email:null,csrf:''});
    }
    else if(auth&&url.pathname==='/api/auth/login'&&req.method==='POST')response=await auth.login(req,req.headers.get('x-real-ip')??'local');
    else if(auth&&url.pathname==='/api/auth/logout'&&req.method==='POST')response=auth.logout(req);
+   else if(workerPath)response=await production.worker(req,url);
    else if(url.pathname.startsWith('/api/')){auth?.require(req,write);const result=await api(req,url);response=result instanceof Response?result:Response.json(result);}
    else {
     const paths:Record<string,string>={'/':'web/index.html','/app.js':'dist/app.js','/style.css':'web/style.css'};

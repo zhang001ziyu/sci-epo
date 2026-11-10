@@ -13,6 +13,7 @@ The writing comes first. A model drafts and reviews; the author decides. Every d
 - **Shot lists.** A shot list binds to one saved revision and references script lines by position instead of copying them. The program rejects gaps, overlaps and out-of-order shots. It warns about shots over 15 seconds (the longest MiniMax H3 clip), durations too short for the dialogue in any bound language, several speakers in one shot, and speaker labels that disagree with the script. Shot lists are versioned, adopted with compare-and-swap, and exported as CSV.
 - **Series continuity.** Each draft freezes the context it was written with. Only adopted earlier episodes feed later drafts, and changes upstream ask the author to recheck.
 - **Model services.** An owner-only page manages OpenAI-compatible (Chat Completions or Responses), Anthropic Messages and Google Gemini connections. Generation, review and revision can use different models. API keys are encrypted at rest and never sent back to the browser. Model errors never fall back to example text.
+- **MiniMax H3 production bridge.** The 制作 (Production) tab turns the adopted shot list into render jobs: clips of up to 15 seconds, one job per clip and voice language, each with an H3 prompt in MiniMax's published format that the program checks against the script line by line. A Python worker renders them with ComfyUI in Google Colab or on your own GPU, reached in three ways: a job package file, a worker that pulls jobs with a token, or a worker URL that Sci-epo pushes to. Videos stay in the worker's folder; Sci-epo records status, file names and durations. See the [production bridge guide](docs/production-bridge.md) and the [Colab notebook](worker/colab/sciepo_h3_worker.ipynb).
 - **Self-hosting.** One Bun process and one SQLite file. A public deployment has a single owner account with an Argon2id password, `__Host-` secure cookies and CSRF checks.
 
 The interface text is currently Simplified Chinese.
@@ -45,7 +46,13 @@ bun test ./tests
 bun run build
 ```
 
-The tests run offline against simulated model responses. They do not prove that a real model service works or that a script is good. Real-model runs are recorded separately, for example in the [short-drama verification (中文)](docs/short-drama-verification-2026-11-08.md).
+The render worker has its own tests, run with Python 3.10 or later and no extra packages:
+
+```sh
+python -m unittest discover -s worker/tests
+```
+
+The tests run offline against simulated model responses and simulated ComfyUI and Sci-epo servers. They do not prove that a real model service works or that a script is good. Real-model runs are recorded separately, for example in the [short-drama verification (中文)](docs/short-drama-verification-2026-11-08.md).
 
 ## How Kiro is used
 
@@ -59,13 +66,13 @@ Versions up to 0.4.6 were developed in a private repository without Kiro, and pa
 
 ## Status and limits
 
-- Voice and video generation are not implemented yet. Shot lists export to CSV for manual tests.
+- Sci-epo does not run H3. The bridge and the worker are tested offline; a render with the real H3 model has not been verified yet, and the program-built prompts are plainer than hand-written ones.
 - A deployment has one owner. Public registration and multi-user workspaces are not implemented.
 - Review quotation checks are structural. The model still makes the semantic judgments, and the author has to read the result.
 
 ## Next
 
-- A production bridge for MiniMax H3: turn an adopted shot list into clip jobs with H3 prompts for each voice language, and run them from Google Colab or on a self-hosted worker.
+- First real H3 renders of the prepared example in Colab, and prompt changes from what they show.
 - A public demo site with prepared examples and no model calls, for judges.
 
 ## Documentation

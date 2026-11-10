@@ -1,15 +1,15 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { canonicalJsonBytes } from '../core/canonicalJson';
-import type { Project, Episode, Revision, Review, Run, ProjectBundle, Localization, ShotList } from '../types';
+import type { Project, Episode, Revision, Review, Run, ProjectBundle, Localization, ShotList, RenderBatch, RenderJob, WorkerToken } from '../types';
 
-type Tables = {projects: Project; episodes: Episode; revisions: Revision; reviews: Review; runs: Run; localizations: Localization; shot_lists: ShotList};
+type Tables = {projects: Project; episodes: Episode; revisions: Revision; reviews: Review; runs: Run; localizations: Localization; shot_lists: ShotList; render_batches: RenderBatch; render_jobs: RenderJob; worker_tokens: WorkerToken};
 export class Store {
  readonly db: Database;
  constructor(path = ':memory:') {
   this.db = new Database(path, {create:true, strict:true});
   this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
-  for (const table of ['projects','episodes','revisions','reviews','runs','localizations','shot_lists']) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
+  for (const table of ['projects','episodes','revisions','reviews','runs','localizations','shot_lists','render_batches','render_jobs','worker_tokens']) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
   this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS active_run ON runs (json_extract(data,'$.episodeId')) WHERE json_extract(data,'$.status')='running'");
  }
  get<T extends keyof Tables>(table:T,id:string):Tables[T] | undefined {
@@ -20,7 +20,7 @@ export class Store {
   return (this.db.query(`SELECT data FROM ${table} ORDER BY rowid`).all() as {data:string}[]).map(r=>JSON.parse(r.data));
  }
  insert<T extends keyof Tables>(table:T,value:Tables[T]):Tables[T] { this.db.query(`INSERT INTO ${table}(id,data) VALUES(?,?)`).run(value.id,JSON.stringify(value)); return value; }
- update<T extends 'projects'|'episodes'|'runs'>(table:T,value:Tables[T]):void {this.db.query(`UPDATE ${table} SET data=? WHERE id=?`).run(JSON.stringify(value),value.id);}
+ update<T extends 'projects'|'episodes'|'runs'|'render_jobs'|'worker_tokens'>(table:T,value:Tables[T]):void {this.db.query(`UPDATE ${table} SET data=? WHERE id=?`).run(JSON.stringify(value),value.id);}
  contextToken(episode:Episode):string {
   const project=this.get('projects',episode.projectId);if(!project)throw new Error('Episode project is missing');
   const {title,premise,characters,worldRules,authorRules,language,glossary,lengthTarget,format,durationTarget}=project;
@@ -33,7 +33,8 @@ export class Store {
   const project=this.get('projects',id);if(!project)return;
   const episodes=this.all('episodes').filter(e=>e.projectId===id).sort((a,b)=>a.ordinal-b.ordinal).map(e=>({...e,contextToken:this.contextToken(e)})), ids=new Set(episodes.map(e=>e.id));
   const revisions=this.all('revisions').filter(r=>ids.has(r.episodeId)), revIds=new Set(revisions.map(r=>r.id));
-  return {project,episodes,revisions,reviews:this.all('reviews').filter(r=>revIds.has(r.revisionId)),runs:this.all('runs').filter(r=>ids.has(r.episodeId)),localizations:this.all('localizations').filter(r=>revIds.has(r.sourceRevisionId)),shotLists:this.all('shot_lists').filter(l=>revIds.has(l.sourceRevisionId))};
+  const renderBatches=this.all('render_batches').filter(b=>ids.has(b.episodeId)), batchIds=new Set(renderBatches.map(b=>b.id));
+  return {project,episodes,revisions,reviews:this.all('reviews').filter(r=>revIds.has(r.revisionId)),runs:this.all('runs').filter(r=>ids.has(r.episodeId)),localizations:this.all('localizations').filter(r=>revIds.has(r.sourceRevisionId)),shotLists:this.all('shot_lists').filter(l=>revIds.has(l.sourceRevisionId)),renderBatches,renderJobs:this.all('render_jobs').filter(j=>batchIds.has(j.batchId))};
  }
  recoverInterrupted() {for(const run of this.all('runs').filter(r=>r.status==='running')) this.update('runs',{...run,status:'failed',error:'服务重启中断了任务；请检查已有版本后重试。',finishedAt:new Date().toISOString()});}
  close(){this.db.close();}

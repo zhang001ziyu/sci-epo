@@ -11,7 +11,8 @@ import { ShotListPanel } from './shotList';
 import { DEFAULT_DURATION_TARGET } from '../src/core/formats';
 import { currentAdaptation } from '../src/core/manuscripts';
 import { adaptationView, exportControl, isManuscriptLanguage, manuscriptName, manuscriptSwitch, missingAdaptationView, readManuscriptPreference, saveManuscriptPreference } from './manuscript';
-type Tab = 'script' | 'review' | 'compare' | 'shots' | 'history' | 'languages';
+import { ProductionPanel } from './production';
+type Tab = 'script' | 'review' | 'compare' | 'shots' | 'production' | 'history' | 'languages';
 type Edit = Pick<Revision, 'title' | 'logline' | 'scenes'>;
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const key = 'sci-epo-workspace-v1';
@@ -76,7 +77,7 @@ function chooseLocalization(id?: string) {
   const found=matches.find(l=>l.id===(id??localizationId))??matches.at(-1);
   localizationId=found?.id??'';localizedDraft=found?readSaved<Localization>(`sci-epo-localization:${found.id}`,structuredClone(found)):undefined;
 }
-function clearPrivateView() {rewriteInstruction.clear();rewriteSceneId='';projects=[];bundle=null;editor=null;localizedDraft=undefined;revisionId='';episodeId='';modal=null;accountEmail=null;csrf='';providerPanel.reset();shotListPanel.reset();}
+function clearPrivateView() {rewriteInstruction.clear();rewriteSceneId='';projects=[];bundle=null;editor=null;localizedDraft=undefined;revisionId='';episodeId='';modal=null;accountEmail=null;csrf='';providerPanel.reset();shotListPanel.reset();productionPanel.reset();}
 
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -133,6 +134,8 @@ const post = <T>(path: string, value: unknown) => api<T>(path, {method:'POST',bo
 const providerPanel=new ProviderPanel({api,run,render,refreshStatus:async()=>{status=await api<typeof status>('/api/status');}});
 const shotListPanel=new ShotListPanel({run,post,reload:async revisionId=>{if(bundle)await loadProject(bundle.project.id,revisionId);},render,notice:message=>{notice=message;},fail:message=>{error=message;render();},confirm:message=>window.confirm(message)});
 const shotContext=()=>({bundle:bundle!,revision:revision()!,episode:episode()!,busy:!!pending,live:status.mode==='live',dirty:dirty(),preferredLanguage:shownLanguage()});
+const productionPanel=new ProductionPanel({run,api,post,setBundle:b=>{bundle=b;},render,notice:message=>{notice=message;},fail:message=>{error=message;render();},origin:()=>location.origin});
+const productionContext=()=>({bundle:bundle!,episode:episode()!,revision:revision()!,busy:!!pending});
 async function loadProject(id: string, selectRevision?: string) {
   bundle = await api<ProjectBundle>(`/api/projects/${encodeURIComponent(id)}`);
   if (!bundle.episodes.some(e => e.id === episodeId)) episodeId = bundle.episodes[0]?.id ?? '';
@@ -170,7 +173,7 @@ function emptyState() {
   const runNote=lastRun?.status==='failed'?`<div class="inline-warning">上次生成未完成：${esc(lastRun.error)}。失败记录已保留。</div>`:lastRun?.status==='running'?'<div class="inline-warning">本集仍有任务正在运行。完成后刷新可查看结果，请勿重复提交。</div>':'';
   return `<section class="welcome compact">${runNote}<div class="welcome-index">第一版剧本</div><h2>让人物走进场景。</h2><p>根据系列设定和已经采用的前集，生成可编辑的分场剧本。<br>初稿会独立保存，审读后再决定如何修改。</p><button class="button primary" data-action="generate" data-mode="live" ${disabled(status.mode!=='live')}>生成剧本初稿 <span>↗</span></button>${status.mode!=='live'?'<p class="muted small">写作服务尚未配置。服务接通后可使用真实生成。</p>':''}<div class="demo-offer"><span>先熟悉流程</span><button class="text-button" data-action="generate" data-mode="demo" ${disabled()}>载入演示样例 →</button><small>预设文本，仅用于体验编辑、审稿和改稿操作。</small></div></section>`;
 }
-function tabs() { return `<nav class="tabs" aria-label="剧本工作区">${([['script','剧本'],['review','审读意见'],['compare','版本对读'],['shots','分镜'],['history','版本记录'],['languages','语言与发布']] as const).map(([id,label])=>`<button data-action="tab" data-id="${id}" class="${tab===id?'active':''}" aria-current="${tab===id?'page':'false'}">${label}${id==='review'&&review()?`<span class="tab-count">${reviewIssueCount(review()!,['too_long','too_short','ambiguous'].includes(checkLength(revision()!.context.brief,revision()!.scenes).status))}</span>`:''}</button>`).join('')}</nav>`; }
+function tabs() { return `<nav class="tabs" aria-label="剧本工作区">${([['script','剧本'],['review','审读意见'],['compare','版本对读'],['shots','分镜'],['production','制作'],['history','版本记录'],['languages','语言与发布']] as const).map(([id,label])=>`<button data-action="tab" data-id="${id}" class="${tab===id?'active':''}" aria-current="${tab===id?'page':'false'}">${label}${id==='review'&&review()?`<span class="tab-count">${reviewIssueCount(review()!,['too_long','too_short','ambiguous'].includes(checkLength(revision()!.context.brief,revision()!.scenes).status))}</span>`:''}</button>`).join('')}</nav>`; }
 function scriptView() {
   const r=revision()!,language=shownLanguage();
   if (language!==scriptLanguage(r)) {
@@ -214,7 +217,7 @@ function modalView() {
 }
 function render() {
   if(loginNeeded){root.innerHTML=`<main class="login-shell"><section class="login-card"><div class="wordmark">SCI·EPO</div><div class="eyebrow">YOUR PRIVATE WRITING ROOM</div><h1>回到你的故事。</h1><p class="muted">登录编剧工作台</p>${error?`<div class="message error" role="alert">${esc(error)}</div>`:''}<form id="login-form"><label class="field-label" for="login-email">邮箱</label><input id="login-email" name="email" type="email" autocomplete="username" required ${disabled()}/><label class="field-label" for="login-password">密码</label><input id="login-password" name="password" type="password" autocomplete="current-password" required ${disabled()}/><button class="button primary full-width" type="submit" ${disabled()}>${pending?'正在登录…':'登录创作空间 →'}</button></form><p class="small muted">英文原稿 · 多语言改编 · 作者定稿</p></section></main>`;return;}
-  root.innerHTML=`<div class="app-shell">${sidebar()}<main class="workspace">${providerPage?'<header class="workspace-header"><div><div class="eyebrow">MODEL SERVICES</div><h1>模型服务</h1></div><button class="button subtle" data-action="close-providers">返回剧本 →</button></header>':header()}<div class="message-area" aria-live="polite">${pending?`<div class="message progress"><span class="spinner"></span>${esc(pending)}<span class="small">请稍候，完成后会保留为独立记录。</span></div>`:''}${error?`<div class="message error" role="alert"><span>${esc(error)}</span><button class="text-button" data-action="dismiss-error">关闭</button></div>`:''}${notice?`<div class="message success">${esc(notice)}</div>`:''}</div>${providerPage?providerPanel.view(!!pending):revision()?`${tabs()}<div class="writing-layout ${tab==='languages'||tab==='shots'?'wide-layout':''}"><div class="writing-main">${tab==='script'?scriptView():tab==='review'?reviewView():tab==='compare'?compareView():tab==='shots'?shotListPanel.view(shotContext()):tab==='languages'?languagesView(bundle!,revision()!,targetLanguage,localizationId,localizedDraft,!!pending,status.mode==='live',dirty()):historyView()}</div>${tab==='languages'||tab==='shots'?'':inspector()}</div>`:ready?emptyState():'<div class="empty-panel"><p>正在读取创作空间…</p></div>'}</main></div>${modalView()}`;
+  root.innerHTML=`<div class="app-shell">${sidebar()}<main class="workspace">${providerPage?'<header class="workspace-header"><div><div class="eyebrow">MODEL SERVICES</div><h1>模型服务</h1></div><button class="button subtle" data-action="close-providers">返回剧本 →</button></header>':header()}<div class="message-area" aria-live="polite">${pending?`<div class="message progress"><span class="spinner"></span>${esc(pending)}<span class="small">请稍候，完成后会保留为独立记录。</span></div>`:''}${error?`<div class="message error" role="alert"><span>${esc(error)}</span><button class="text-button" data-action="dismiss-error">关闭</button></div>`:''}${notice?`<div class="message success">${esc(notice)}</div>`:''}</div>${providerPage?providerPanel.view(!!pending):revision()?`${tabs()}<div class="writing-layout ${tab==='languages'||tab==='shots'||tab==='production'?'wide-layout':''}"><div class="writing-main">${tab==='script'?scriptView():tab==='review'?reviewView():tab==='compare'?compareView():tab==='shots'?shotListPanel.view(shotContext()):tab==='production'?productionPanel.view(productionContext()):tab==='languages'?languagesView(bundle!,revision()!,targetLanguage,localizationId,localizedDraft,!!pending,status.mode==='live',dirty()):historyView()}</div>${tab==='languages'||tab==='shots'||tab==='production'?'':inspector()}</div>`:ready?emptyState():'<div class="empty-panel"><p>正在读取创作空间…</p></div>'}</main></div>${modalView()}`;
   if (modal) requestAnimationFrame(()=>document.querySelector<HTMLInputElement>(modal==='episode'?'#episode-title':'#brief-title')?.focus());
 }
 
@@ -222,6 +225,7 @@ root.addEventListener('input', event=>{
   const el=event.target as HTMLInputElement|HTMLTextAreaElement;
   if(providerPanel.input(el as HTMLInputElement))return;
   if(shotListPanel.input(el))return;
+  if(productionPanel.input(el))return;
   if(el.id==='brief-format'){
     form.format=el.value==='episodic'?'episodic':'vertical_short_drama';
     if(form.format==='vertical_short_drama'&&!form.durationTarget)form.durationTarget={...DEFAULT_DURATION_TARGET};
@@ -260,6 +264,7 @@ root.addEventListener('change', event=>{
   const el=event.target as HTMLInputElement|HTMLSelectElement;
   if(providerPanel.input(el))return;
   if(shotListPanel.change(el))return;
+  if(productionPanel.change(el,revision()&&episode()?productionContext():undefined))return;
   if(el.id==='target-language'){targetLanguage=el.value;chooseLocalization();render();return;}
   if(el.id==='localization-version'){chooseLocalization(el.value);render();return;}
   if (el.id==='rewrite-scene') {rewriteSceneId=el.value;updateDirtyBadge();}
@@ -312,6 +317,7 @@ root.addEventListener('click', event=>{
   if(action==='close-providers'){if(!providerPanel.canLeave())return;providerPanel.reset();providerPage=false;history.replaceState(null,'',location.pathname);render();return;}
   if(providerPanel.click(action??'',id))return;
   if(action?.startsWith('shots-')){if(revision()&&episode())shotListPanel.click(action,el,shotContext());return;}
+  if(action?.startsWith('production-')){if(revision()&&episode())productionPanel.click(action,el,productionContext());return;}
   if(providerPage&&['new-project','edit-project','new-episode','select-episode'].includes(action??'')){if(!providerPanel.canLeave())return;providerPanel.reset();providerPage=false;history.replaceState(null,'',location.pathname);}
   if(action==='logout'){void run('正在退出…',async()=>{await post('/api/auth/logout',{});for(const k of Object.keys(localStorage))if(k.startsWith('sci-epo-'))localStorage.removeItem(k);clearPrivateView();loginNeeded=true;});return;}
   if(action==='localize'){
@@ -356,7 +362,7 @@ root.addEventListener('click', event=>{
   }
   if (action==='accept') {void run('正在采用这一版…',async()=>{bundle=await post<ProjectBundle>(`/api/episodes/${encodeURIComponent(episodeId)}/accept`,{revisionId,expectedAcceptedRevisionId:episode()!.acceptedRevisionId,expectedContextToken:episode()!.contextToken,acknowledgeReview,acknowledgeLengthException});acknowledgeReview=false;notice='已采用这版，后续分集将以它为创作依据。';});return;}
 });
-window.addEventListener('beforeunload', event=>{if(providerPanel.changed||dirty()||(modal==='project'&&JSON.stringify(form)!==JSON.stringify(formBaseline))||(modal==='episode'&&episodeTitle.trim())){event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload', event=>{if(providerPanel.changed||productionPanel.changed||dirty()||(modal==='project'&&JSON.stringify(form)!==JSON.stringify(formBaseline))||(modal==='episode'&&episodeTitle.trim())){event.preventDefault();event.returnValue='';}});
 root.addEventListener('keydown', event=>{
   if(!modal)return;
   if(event.key==='Escape'&&!pending){event.preventDefault();document.querySelector<HTMLButtonElement>('[data-action="close-modal"]')?.click();return;}
