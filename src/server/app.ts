@@ -5,7 +5,8 @@ import { checkLength, parseLengthTarget } from '../core/length';
 import { Store } from './store';
 import { Auth, AuthError } from './auth';
 import { ProviderManager, ProviderAdminError } from './providerManager';
-import { alignLocalization, defaultPublication, exportLocalization, languageTag, publicationSettings, scriptLanguage } from '../core/languages';
+import { alignLocalization, defaultPublication, exportLocalization, languageName, languageTag, notesLanguage, publicationSettings, scriptLanguage } from '../core/languages';
+import { currentAdaptation } from '../core/manuscripts';
 import { reviewSuggestion } from '../core/reviewSuggestions';
 import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
@@ -177,10 +178,17 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   if(method==='GET'&&a==='providers'&&!target)return providers.managed?.catalog()??fail(503,'模型管理尚未启用。');
   if(method==='GET'&&a==='projects'&&!target)return store.all('projects');
   if(method==='GET'&&a==='projects'&&target)return store.bundle(project(target).id);
-  if(method==='GET'&&a==='revisions'&&target&&action==='export')return new Response(exportMarkdown(revision(target)),{headers:{'content-type':'text/markdown; charset=utf-8','content-disposition':`attachment; filename="sci-epo-${target}.md"`}});
+  if(method==='GET'&&a==='revisions'&&target&&action==='export'){
+   // The manuscript in the requested language: the source itself, or the current adaptation of this exact revision.
+   const r=revision(target),requested=url.searchParams.get('language'),language=requested===null?scriptLanguage(r):validLanguage(requested);
+   const markdown=(text:string)=>new Response(text,{headers:{'content-type':'text/markdown; charset=utf-8','content-disposition':`attachment; filename="sci-epo-${r.id}-${language}.md"`}});
+   if(language===scriptLanguage(r))return markdown(exportMarkdown(r,notesLanguage(language)));
+   const l=currentAdaptation(r,store.all('localizations'),language)??fail(404,`这一版还没有${languageName(language)}稿。`);
+   return markdown(exportLocalization(r,l,notesLanguage(language)));
+  }
   if(method==='GET'&&a==='localizations'&&target&&action==='export'){
    const l=store.get('localizations',target)??fail(404,'找不到语言版本。');
-   return new Response(exportLocalization(revision(l.sourceRevisionId),l),{headers:{'content-type':'text/markdown; charset=utf-8','content-disposition':`attachment; filename="sci-epo-${l.language}-${l.id}.md"`}});
+   return new Response(exportLocalization(revision(l.sourceRevisionId),l,notesLanguage(l.language)),{headers:{'content-type':'text/markdown; charset=utf-8','content-disposition':`attachment; filename="sci-epo-${l.language}-${l.id}.md"`}});
   }
   if(method==='GET'&&a==='shot-lists'&&target&&action==='export'){
    const list=store.get('shot_lists',target)??fail(404,'找不到分镜表。'),r=revision(list.sourceRevisionId),e=episode(r.episodeId);

@@ -5,6 +5,11 @@ export const LANGUAGES = [
   {code:'ja',name:'日本語'}, {code:'ko',name:'한국어'}, {code:'es',name:'Español'},
   {code:'fr',name:'Français'}, {code:'de',name:'Deutsch'}, {code:'pt-BR',name:'Português (Brasil)'},
 ] as const;
+/** Languages the workspace offers in its pickers and manuscript switch. LANGUAGES keeps names for stored values. */
+export const WORKSPACE_LANGUAGES = [{code:'en',name:'English'}, {code:'zh-CN',name:'简体中文'}] as const;
+export type NotesLanguage = 'en' | 'zh-CN';
+/** Exported provenance notes are written in English for English manuscripts, otherwise in Chinese. */
+export const notesLanguage = (code: string): NotesLanguage => /^en(-|$)/u.test(code) ? 'en' : 'zh-CN';
 /** Accept canonical BCP-47 tags so storage is not limited to the initial language picker. */
 export function languageTag(input: unknown): string {
   if (typeof input !== 'string' || input.length > 35 || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(input)) throw new Error('语言代码无效，请使用 en、zh-CN 等语言代码。');
@@ -30,6 +35,9 @@ export function alignLocalization(source: Revision, output: ScriptOutput): Scrip
   if (output.scenes.length !== source.scenes.length || output.scenes.some((s,i)=>s.id!==source.scenes[i]?.id)) throw new Error('语言改编必须保留原稿的场景编号、数量和顺序。');
   return {...output,scenes:output.scenes.map(s=>({...s,locked:false}))};
 }
-export function exportLocalization(source: Revision, target: Localization): string {
-  return [`# ${target.title}`, '', target.logline, '', `> ${scriptLanguage(source)} → ${target.language} · 原稿 ${source.id} · 语言版本 ${target.id}`, `> ${target.mode==='demo'?'预置双语演示':'语言改编候选'}；尚未表示作者已审定。`, '', ...target.scenes.flatMap(s=>[`## ${s.heading}`, '', s.content, ''])].join('\n');
+export function exportLocalization(source: Revision, target: Localization, notes: NotesLanguage = 'zh-CN'): string {
+  const provenance = notes === 'en'
+    ? [`> ${scriptLanguage(source)} → ${target.language} · source revision ${source.id} · adaptation ${target.id} · ${target.createdAt}`, `> ${target.mode==='demo'?'Prepared bilingual example':target.mode==='manual'?'Adaptation edited by the author':'Adaptation candidate'}; not yet approved by the author.`]
+    : [`> ${scriptLanguage(source)} → ${target.language} · 原稿 ${source.id} · 语言版本 ${target.id}`, `> ${target.mode==='demo'?'预置双语演示':'语言改编候选'}；尚未表示作者已审定。`];
+  return [`# ${target.title}`, '', target.logline, '', ...provenance, '', ...target.scenes.flatMap(s=>[`## ${s.heading}`, '', s.content, ''])].join('\n');
 }

@@ -9,6 +9,7 @@ The writing comes first. A model drafts and reviews; the author decides. Every d
 - **Drafting, review and revision.** Generate an episode from the series premise, characters and world rules. Review it on five writing dimensions plus a separate cause-and-effect check. Every review claim has to quote the frozen script exactly; claims the program cannot match are shown but held back from rewriting. Rewrite one scene: the program copies every other scene unchanged and refuses to touch locked scenes. Compare the candidate with the original and adopt it explicitly.
 - **Two series formats.** *Vertical short drama* (9:16, 60–120 seconds per episode by default) asks for an opening hook, a turn and a concrete open question at the end, with one action beat or spoken line per line (`NAME: line`). *Episodic* series keep the earlier behavior; their model instructions are locked by a golden test.
 - **Two voice languages.** A short-drama script can be adapted into English or Simplified Chinese line by line. The program rejects an adaptation whose scene or line counts differ from the source, so one shot plan serves both voice tracks.
+- **Chinese or English manuscript.** A switch in the header shows the Chinese or the English manuscript of the open version, and the shot list lists that language first. Export asks for the language and writes the source script or the current adaptation of that exact version; an adaptation of an older version is never offered as the current one.
 - **Shot lists.** A shot list binds to one saved revision and references script lines by position instead of copying them. The program rejects gaps, overlaps and out-of-order shots. It warns about shots over 15 seconds (the longest MiniMax H3 clip), durations too short for the dialogue in any bound language, several speakers in one shot, and speaker labels that disagree with the script. Shot lists are versioned, adopted with compare-and-swap, and exported as CSV.
 - **Series continuity.** Each draft freezes the context it was written with. Only adopted earlier episodes feed later drafts, and changes upstream ask the author to recheck.
 - **Model services.** An owner-only page manages OpenAI-compatible (Chat Completions or Responses), Anthropic Messages and Google Gemini connections. Generation, review and revision can use different models. API keys are encrypted at rest and never sent back to the browser. Model errors never fall back to example text.
@@ -48,7 +49,7 @@ The tests run offline against simulated model responses. They do not prove that 
 
 ## How Kiro is used
 
-- **Specs.** The vertical short-drama feature (formats, line-aligned adaptations, shot lists) was planned as requirements, design and tasks in [`.kiro/specs/vertical-short-drama/`](.kiro/specs/vertical-short-drama/requirements.md) and implemented task by task.
+- **Specs.** Each feature is planned as requirements, design and tasks in `.kiro/specs/` and implemented task by task: [vertical short drama](.kiro/specs/vertical-short-drama/requirements.md) (formats, line-aligned adaptations, shot lists) and the [bilingual workspace](.kiro/specs/bilingual-workspace/requirements.md) (manuscript language switch, export by language).
 - **Steering.** [`episode-continuity.md`](.kiro/steering/episode-continuity.md) holds the writing and revision rules: stable scene IDs, locked scenes preserved byte for byte, line-aligned adaptations, shot lists that never copy script text. [`public-repo.md`](.kiro/steering/public-repo.md) keeps credentials and private deployment details out of this repository. [`communication.md`](.kiro/steering/communication.md) sets the working language with the author.
 - **Golden test.** `tests/fixtures/episodic-prompts.json` locks the model instructions for episodic series, so the short-drama work could not change them silently.
 
@@ -64,7 +65,6 @@ Versions up to 0.4.6 were developed in a private repository without Kiro, and pa
 
 ## Next
 
-- A language switch for the workspace: show the Chinese or English manuscript of the same script, and choose the language when exporting.
 - A production bridge for MiniMax H3: turn an adopted shot list into clip jobs with H3 prompts for each voice language, and run them from Google Colab or on a self-hosted worker.
 - A public demo site with prepared examples and no model calls, for judges.
 

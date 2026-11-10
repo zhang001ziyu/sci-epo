@@ -23,7 +23,7 @@ export interface ShotListHooks {
   fail(message: string): void;
   confirm(message: string): boolean;
 }
-export interface ShotListContext { bundle: ProjectBundle; revision: Revision; episode: Episode; busy: boolean; live: boolean; dirty: boolean }
+export interface ShotListContext { bundle: ProjectBundle; revision: Revision; episode: Episode; busy: boolean; live: boolean; dirty: boolean; preferredLanguage?: string }
 type Field = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const draftKey = (id: string) => `sci-epo-shotlist:${id}`;
@@ -84,7 +84,7 @@ export class ShotListPanel {
     const warningBlock = warnings.length ? `<div class="inline-warning" role="status"><strong>需要留意</strong><ul>${warnings.map(w => `<li>${esc(w.message)}</li>`).join('')}</ul><span class="small">这些提示不会阻止保存、采用或导出。</span></div>` : '';
     const castEditor = this.editing ? this.castEditor(content) : '';
     const scenes = revision.scenes.map(scene => {
-      const cards = views.filter(v => v.shot.sceneId === scene.id).map(v => this.card(v, content, list.aspectRatio, revision, Object.keys(adaptations), warnings.filter(w => w.shotId === v.shot.id).map(w => w.message), disabled()));
+      const cards = views.filter(v => v.shot.sceneId === scene.id).map(v => this.card(v, content, list.aspectRatio, revision, Object.keys(adaptations), warnings.filter(w => w.shotId === v.shot.id).map(w => w.message), disabled(), ctx.preferredLanguage));
       return `<section class="shot-scene"><h3><span>${esc(scene.id)}</span>${esc(scene.heading)}</h3><div class="shot-grid">${cards.join('')}</div></section>`;
     }).join('');
     return `<section class="shots-view">${intro}${toolbar}${summary}${warningBlock}${castEditor}${scenes}</section>`;
@@ -118,12 +118,14 @@ export class ShotListPanel {
     return `<div class="cast-editor"><span class="field-label">角色表</span>${content.cast.map(c => `<label>${esc(c.id)}<input data-cast-id="${esc(c.id)}" value="${esc(c.name)}" maxlength="60"/></label><button class="text-button" data-action="shots-remove-cast" data-id="${esc(c.id)}">移除</button>`).join('')}<button class="text-button" data-action="shots-add-cast">添加角色 ＋</button></div>`;
   }
 
-  private card(view: ShotView, content: ShotListContent, ratio: ShotList['aspectRatio'], revision: Revision, adaptationLanguages: string[], warnings: string[], disabled: string): string {
+  private card(view: ShotView, content: ShotListContent, ratio: ShotList['aspectRatio'], revision: Revision, adaptationLanguages: string[], warnings: string[], disabled: string, preferred?: string): string {
     const {shot, order, lines} = view, names = new Map(content.cast.map(c => [c.id, c.name]));
-    const languages = [scriptLanguage(revision), ...adaptationLanguages];
+    const bound = [scriptLanguage(revision), ...adaptationLanguages], ordered = !!preferred && bound.includes(preferred);
+    // The manuscript language reads first; the other voice languages follow as secondary lines.
+    const languages = ordered ? [preferred!, ...bound.filter(l => l !== preferred)] : bound;
     const frame = `<div class="shot-frame ratio-${ratio === '9:16' ? '9-16' : '16-9'}"><span class="shot-frame-label">${esc(SIZE_LABELS[shot.size])} · ${esc(CAMERA_LABELS[shot.camera])}</span><span class="shot-frame-id">${esc(shot.id)}</span></div>`;
     const lineView = lines.map(line => {
-      const texts = languages.map(language => `<p lang="${esc(language)}">${esc(line.texts[language] || '—')}</p>`).join('');
+      const texts = languages.map((language, i) => `<p lang="${esc(language)}"${ordered && i ? ' class="secondary-language"' : ''}>${esc(line.texts[language] || '—')}</p>`).join('');
       const speaker = this.editing
         ? `<select data-shot-speaker data-shot-id="${esc(shot.id)}" data-line="${esc(line.position)}" aria-label="第 ${esc(line.position)} 行的说话人" ${disabled}><option value="">动作 · 不说话</option>${content.cast.map(c => `<option value="${esc(c.id)}" ${line.speakerId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>${line.position > shot.firstLine ? `<button class="text-button" data-action="shots-split" data-id="${esc(shot.id)}" data-line="${esc(line.position)}" ${disabled}>从这一行拆开</button>` : ''}`
         : '';

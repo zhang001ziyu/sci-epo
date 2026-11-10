@@ -9,6 +9,8 @@ import { RewriteInstruction } from './rewriteInstruction';
 import { modelAttemptsView } from './modelAttempts';
 import { ShotListPanel } from './shotList';
 import { DEFAULT_DURATION_TARGET } from '../src/core/formats';
+import { currentAdaptation } from '../src/core/manuscripts';
+import { adaptationView, exportControl, isManuscriptLanguage, manuscriptName, manuscriptSwitch, missingAdaptationView, readManuscriptPreference, saveManuscriptPreference } from './manuscript';
 type Tab = 'script' | 'review' | 'compare' | 'shots' | 'history' | 'languages';
 type Edit = Pick<Revision, 'title' | 'logline' | 'scenes'>;
 const root = document.querySelector<HTMLDivElement>('#app')!;
@@ -62,6 +64,11 @@ let csrf = '';
 let targetLanguage = 'zh-CN';
 let localizationId = '';
 let localizedDraft: Localization|undefined;
+/** Null until the author picks a language; then the choice applies to every series and episode. */
+let manuscriptLanguage: string|null = readManuscriptPreference();
+const shownLanguage = (): string => { const r=revision(); return manuscriptLanguage ?? (r ? scriptLanguage(r) : 'zh-CN'); };
+/** The languages tab starts from the manuscript language when it is not the script language. */
+function preselectTarget() { const r=revision(); if(r&&shownLanguage()!==scriptLanguage(r))targetLanguage=shownLanguage(); }
 function chooseLocalization(id?: string) {
   const r=revision();if(!r)return;
   if(targetLanguage===scriptLanguage(r))targetLanguage=targetLanguage==='en'?'zh-CN':'en';
@@ -98,6 +105,7 @@ function setRevision(id: string) {
   if (!sameRevision || !r?.scenes.some(s=>s.id===rewriteSceneId&&!s.locked)) rewriteSceneId = r?.scenes.find(s => !s.locked)?.id ?? '';
   if (!sameRevision) {rewriteInstruction.clear();shotListPanel.reset();}
   acknowledgeReview = false; acknowledgeLengthException = false;
+  preselectTarget();
   chooseLocalization();
 }
 function updateDirtyBadge() {
@@ -124,7 +132,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 const post = <T>(path: string, value: unknown) => api<T>(path, {method:'POST',body:JSON.stringify(value)});
 const providerPanel=new ProviderPanel({api,run,render,refreshStatus:async()=>{status=await api<typeof status>('/api/status');}});
 const shotListPanel=new ShotListPanel({run,post,reload:async revisionId=>{if(bundle)await loadProject(bundle.project.id,revisionId);},render,notice:message=>{notice=message;},fail:message=>{error=message;render();},confirm:message=>window.confirm(message)});
-const shotContext=()=>({bundle:bundle!,revision:revision()!,episode:episode()!,busy:!!pending,live:status.mode==='live',dirty:dirty()});
+const shotContext=()=>({bundle:bundle!,revision:revision()!,episode:episode()!,busy:!!pending,live:status.mode==='live',dirty:dirty(),preferredLanguage:shownLanguage()});
 async function loadProject(id: string, selectRevision?: string) {
   bundle = await api<ProjectBundle>(`/api/projects/${encodeURIComponent(id)}`);
   if (!bundle.episodes.some(e => e.id === episodeId)) episodeId = bundle.episodes[0]?.id ?? '';
@@ -153,7 +161,7 @@ function sidebar() {
 }
 function header() {
   const e=episode(),r=revision();
-  return `<header class="workspace-header"><div><div class="eyebrow">${bundle?esc(bundle.project.title):'YOUR NEXT STORY'}${e?` <span>/</span> EPISODE ${String(e.ordinal).padStart(2,'0')}`:''}</div><h1>${e?esc(e.title):bundle?'写下第一集':'让好故事先发生。'}</h1></div><div class="header-actions">${r?`<span class="pill ${r.mode==='demo'?'demo':''}">${modeName(r.mode)}</span><a class="button subtle" href="/api/revisions/${encodeURIComponent(r.id)}/export" download>导出剧本 ↗</a>`:''}</div></header>`;
+  return `<header class="workspace-header"><div><div class="eyebrow">${bundle?esc(bundle.project.title):'YOUR NEXT STORY'}${e?` <span>/</span> EPISODE ${String(e.ordinal).padStart(2,'0')}`:''}</div><h1>${e?esc(e.title):bundle?'写下第一集':'让好故事先发生。'}</h1></div><div class="header-actions">${r?`${manuscriptSwitch(manuscriptLanguage,scriptLanguage(r))}<span class="pill ${r.mode==='demo'?'demo':''}">${modeName(r.mode)}</span>${exportControl(r,bundle!.localizations)}`:''}</div></header>`;
 }
 function emptyState() {
   if (!bundle) return `<section class="welcome"><div class="welcome-index">01 / 故事起点</div><h2>一个值得讲下去的故事。</h2><p>先确定人物在乎什么、世界如何运作，<br>再让他们在一场戏里做出选择。</p><button class="button primary" data-action="new-project">建立第一个系列 <span>＋</span></button><div class="journey"><span>创作设定</span><b>→</b><span>剧本初稿</span><b>→</b><span>审读与改稿</span><b>→</b><span>作者定稿</span></div></section>`;
@@ -164,7 +172,12 @@ function emptyState() {
 }
 function tabs() { return `<nav class="tabs" aria-label="剧本工作区">${([['script','剧本'],['review','审读意见'],['compare','版本对读'],['shots','分镜'],['history','版本记录'],['languages','语言与发布']] as const).map(([id,label])=>`<button data-action="tab" data-id="${id}" class="${tab===id?'active':''}" aria-current="${tab===id?'page':'false'}">${label}${id==='review'&&review()?`<span class="tab-count">${reviewIssueCount(review()!,['too_long','too_short','ambiguous'].includes(checkLength(revision()!.context.brief,revision()!.scenes).status))}</span>`:''}</button>`).join('')}</nav>`; }
 function scriptView() {
-  const r=revision()!;
+  const r=revision()!,language=shownLanguage();
+  if (language!==scriptLanguage(r)) {
+    const ctx={bundle:bundle!,revision:r,language,versionNumber:revisions().findIndex(v=>v.id===r.id)+1,busy:!!pending,live:status.mode==='live',dirty:dirty()};
+    const adaptation=currentAdaptation(r,bundle!.localizations,language);
+    return adaptation?adaptationView(ctx,adaptation):missingAdaptationView(ctx);
+  }
   if (!editor) return '';
   return `<div class="script-toolbar"><div><span class="label">当前版本</span><strong>V${revisions().findIndex(v=>v.id===r.id)+1}</strong><span id="draft-status" class="small muted ${dirty()?'is-dirty':''}">${dirty()?'编辑已暂存 · 尚未保存为版本':'已保存'}</span></div><button class="button small-button" data-action="save-script" ${disabled(!dirty())}>保存新版本</button></div>
     ${modelAttemptsView(bundle!.runs.filter(run=>run.resultId===r.id&&(run.kind==='rewrite'||run.kind==='generate')).at(-1))}<div id="length-check">${lengthView(r.context.brief,editor.scenes)}</div><article class="script-paper"><div class="paper-kicker">${esc(bundle!.project.title)} / SCRIPT</div><label class="sr-only" for="script-title">剧本标题</label><input id="script-title" class="script-title" value="${esc(editor.title)}" ${disabled()}/><label class="field-label" for="script-logline">本集梗概</label><textarea id="script-logline" class="logline" rows="2" ${disabled()}>${esc(editor.logline)}</textarea>
@@ -286,14 +299,26 @@ root.addEventListener('click', event=>{
   const action=el.dataset.action,id=el.dataset.id??'',mode=el.dataset.mode==='demo'?'demo':'live';
   if (action==='dismiss-error') {error='';render();return;}
   if (action==='tab') {tab=id as Tab;render();return;}
+  if (action==='manuscript-language') {
+    // A view preference: no request, so it also works while a task runs. Only Chinese and English are remembered.
+    const r=revision();
+    if (isManuscriptLanguage(id)) {manuscriptLanguage=id;saveManuscriptPreference(id);} else if (r&&id===scriptLanguage(r)) manuscriptLanguage=null; else return;
+    if (r&&!pending) {preselectTarget();chooseLocalization();}
+    render();return;
+  }
   if (pending) return;
+  if (action==='edit-adaptation') {targetLanguage=el.dataset.language??targetLanguage;chooseLocalization(id);tab='languages';render();return;}
   if(action==='open-providers'){if(providerPage)return;if(!canLeave())return;void run('正在读取模型服务…',async()=>{await providerPanel.load();providerPage=true;history.replaceState(null,'','#providers');});return;}
   if(action==='close-providers'){if(!providerPanel.canLeave())return;providerPanel.reset();providerPage=false;history.replaceState(null,'',location.pathname);render();return;}
   if(providerPanel.click(action??'',id))return;
   if(action?.startsWith('shots-')){if(revision()&&episode())shotListPanel.click(action,el,shotContext());return;}
   if(providerPage&&['new-project','edit-project','new-episode','select-episode'].includes(action??'')){if(!providerPanel.canLeave())return;providerPanel.reset();providerPage=false;history.replaceState(null,'',location.pathname);}
   if(action==='logout'){void run('正在退出…',async()=>{await post('/api/auth/logout',{});for(const k of Object.keys(localStorage))if(k.startsWith('sci-epo-'))localStorage.removeItem(k);clearPrivateView();loginNeeded=true;});return;}
-  if(action==='localize'){const sourceId=revisionId,language=targetLanguage;void run(mode==='demo'?'正在载入双语演示…':'正在改编目标语言剧本…',async()=>{const l=await post<Localization>(`/api/revisions/${encodeURIComponent(sourceId)}/localize`,{mode,language});await loadProject(bundle!.project.id,sourceId);chooseLocalization(l.id);tab='languages';notice='语言候选已保存。请对照原稿审读事实、人物语气与对白。';});return;}
+  if(action==='localize'){
+    const sourceId=revisionId,language=el.dataset.language??targetLanguage,fromScript=el.dataset.origin==='script';
+    void run(mode==='demo'?'正在载入双语演示…':'正在改编目标语言剧本…',async()=>{const l=await post<Localization>(`/api/revisions/${encodeURIComponent(sourceId)}/localize`,{mode,language});await loadProject(bundle!.project.id,sourceId);targetLanguage=language;chooseLocalization(l.id);
+      if(fromScript){tab='script';notice=`${manuscriptName(language)}已保存为语言版本。可在语言与发布页逐场对照原稿审读和修改。`;}else{tab='languages';notice='语言候选已保存。请对照原稿审读事实、人物语气与对白。';}});return;
+  }
   if (action==='new-project'||action==='edit-project') {
     if (!canLeave()) return;editingProject=action==='edit-project';form=editingProject?{title:bundle!.project.title,premise:bundle!.project.premise,characters:bundle!.project.characters,worldRules:bundle!.project.worldRules,authorRules:bundle!.project.authorRules,language:bundle!.project.language??'zh-CN',glossary:bundle!.project.glossary??'',...(bundle!.project.lengthTarget?{lengthTarget:{...bundle!.project.lengthTarget}}:{}),...(bundle!.project.format==='vertical_short_drama'?{format:'vertical_short_drama' as const,durationTarget:{...(bundle!.project.durationTarget??DEFAULT_DURATION_TARGET)}}:{format:'episodic' as const})}:blankBrief();formBaseline={...form};error='';modal='project';render();return;
   }

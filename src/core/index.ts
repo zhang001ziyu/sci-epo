@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonBytes } from './canonicalJson';
-import { languageTag, languageName, scriptLanguage } from './languages';
+import { languageTag, languageName, scriptLanguage, type NotesLanguage } from './languages';
 import { scriptLines } from './scriptLines';
 import { buildStoryboardMessages } from './storyboardPrompt';
 import { checkLength, lengthInstruction, parseLengthTarget } from './length';
@@ -9,7 +9,7 @@ import { createEvidenceReader, EVIDENCE_REF_GUIDANCE } from './evidence';
 import { CAUSALITY_GUIDANCE, PRESSURE_GUIDANCE, readCausalAudit } from './causality';
 import { DEFAULT_DURATION_TARGET, isShortDrama, parseDurationTarget, parseFormat } from './formats';
 import { SHORT_DRAMA_ADAPTATION_RULES, craftGuidance, durationLine, lineFormatReminder, reviewGuidance, studioIntro } from './formatPrompts';
-import { DIMENSIONS, type Assessment, type Brief, type CausalAudit, type ContextSnapshot, type Evidence, type ModelRequest, type Review, type Revision, type Scene, type ScriptOutput } from '../types';
+import { DIMENSIONS, type Assessment, type Brief, type CausalAudit, type ContextSnapshot, type Evidence, type LengthCheck, type ModelRequest, type Review, type Revision, type Scene, type ScriptOutput } from '../types';
 
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -182,7 +182,17 @@ export function buildModelMessages(request: ModelRequest): {role: 'system' | 'us
   return [{role: 'system', content: `${intro}\n${craftGuidance(brief)}\n${lengthInstruction(revision.context.brief,revision.scenes,selected.id)}${durationLine(brief)}\n只改指定场景，保留已有事实与作者约束。相邻场景仅供接续参考，禁止改变；不得用新增能力、自动恢复资源或抹去代价掩盖问题。修改意见对旧剧情的描述不等于事实，必须先与原文核对；不能为让审稿说法成立而补造道具属性、改变已发生事件、把计划写成完成或把人物自主选择写成物理不能。只解决本次指定目标，保留与目标无关的原句、动作、声音和人物语气；不顺手重写整场或统一成说明性对白。总经历、自动运行、实际劳动、连续工时和可用窗口分别保留；未知时长不要猜数。若修改意见与硬约束冲突，保留硬约束，不擅自扩改其他场景。仅返回 {"scene":{"id":"选中编号","heading":"场景标题","content":"修改后的完整本场正文"}}，不要返回 title/logline/scenes/locked 等其他字段。${lineFormatReminder(brief)}`}, {role: 'user', content: JSON.stringify({task: '生成单场改稿候选，供作者与原稿对读。', instruction: request.instruction, selectedSceneId: selected.id, context: revision.context, originalScript: {title: revision.title, logline: revision.logline, scenes: revision.scenes}})}];
 }
 
-export function exportMarkdown(revision: Revision): string {
-  const mode = revision.mode === 'demo' ? '预置演示样例' : revision.mode === 'manual' ? '作者编辑' : '模型生成候选';
-  return [`# ${revision.title}`, '', revision.logline, '', `> ${mode} · ${scriptLanguage(revision)} · 版本 ${revision.id} · ${revision.createdAt}`, `> ${checkLength(revision.context.brief,revision.scenes).message}`, '> 导出文件不表示作者已采用或文学质量已验收。', '', ...revision.scenes.flatMap(s => [`## ${s.heading}`, '', s.content, ''])].join('\n');
+export function exportMarkdown(revision: Revision, notes: NotesLanguage = 'zh-CN'): string {
+  const check = checkLength(revision.context.brief, revision.scenes);
+  const provenance = notes === 'en'
+    ? [`> ${revision.mode === 'demo' ? 'Prepared demonstration example' : revision.mode === 'manual' ? 'Author edit' : 'Model-generated candidate'} · ${scriptLanguage(revision)} · revision ${revision.id} · ${revision.createdAt}`, `> ${englishLengthNote(check)}`, '> An exported file does not mean the author adopted this version or accepted its quality.']
+    : [`> ${revision.mode === 'demo' ? '预置演示样例' : revision.mode === 'manual' ? '作者编辑' : '模型生成候选'} · ${scriptLanguage(revision)} · 版本 ${revision.id} · ${revision.createdAt}`, `> ${check.message}`, '> 导出文件不表示作者已采用或文学质量已验收。'];
+  return [`# ${revision.title}`, '', revision.logline, '', ...provenance, '', ...revision.scenes.flatMap(s => [`## ${s.heading}`, '', s.content, ''])].join('\n');
+}
+
+function englishLengthNote(check: LengthCheck): string {
+  const unit = check.unit === 'words' ? 'words' : 'characters (no whitespace)';
+  if (!check.target) return check.status === 'ambiguous' ? `Body text: ${check.count} ${unit}. The brief's length range is ambiguous; set one range for the whole episode.` : `Body text: ${check.count} ${unit}. No length range to check against.`;
+  const {min, max} = check.target, state = check.status === 'too_long' ? `${check.count - max} over` : check.status === 'too_short' ? `${min - check.count} short` : 'within range';
+  return `Body text: ${check.count} ${unit}; target ${min}–${max}, ${state}.`;
 }
