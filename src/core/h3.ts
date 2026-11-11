@@ -111,15 +111,29 @@ export function cutStamp(seconds: number): string {
 }
 
 const SIZE_PHRASES: Record<Shot['size'], string> = {extreme_close_up: 'an extreme close-up', close_up: 'a close-up', medium_close_up: 'a medium close-up', medium: 'a medium shot', medium_wide: 'a medium-wide shot', wide: 'a wide shot', insert: 'an insert shot'};
-const CAMERA_PHRASES: Record<Shot['camera'], string> = {
+const CAMERA_PHRASES: Record<Exclude<Shot['camera'], 'pan' | 'tilt'>, string> = {
   static: 'The camera holds a static shot.',
   push_in: 'The camera pushes in with small amplitude at slow speed.',
   pull_out: 'The camera pulls out with small amplitude at slow speed.',
-  pan: 'The camera pans right with small amplitude at slow speed.',
-  tilt: 'The camera tilts up with small amplitude at slow speed.',
   track: 'The camera tracks alongside the subject as it moves.',
   handheld: 'The camera shakes slightly, like a handheld shot.',
 };
+const MOVE = 'with small amplitude at slow speed';
+const only = (text: string, yes: RegExp, no: RegExp) => yes.test(text) && !no.test(text);
+const [UP, DOWN, LEFT, RIGHT] = [/\b(up|upward|upwards)\b/iu, /\b(down|downward|downwards)\b/iu, /\bleft\b/iu, /\bright\b/iu];
+/** Pan and tilt directions come from the shot's composition note, so the move never contradicts it.
+ * A pan described as moving up or down is a tilt; without a direction the move stays neutral. */
+export function cameraPhrase(shot: Pick<Shot, 'camera' | 'composition'>): string {
+  const note = shot.composition ?? '';
+  const vertical = only(note, UP, DOWN) ? 'up' : only(note, DOWN, UP) ? 'down' : '';
+  if (shot.camera === 'tilt') return `The camera tilts${vertical ? ` ${vertical}` : ''} ${MOVE}.`;
+  if (shot.camera === 'pan') {
+    const side = only(note, LEFT, RIGHT) ? 'left' : only(note, RIGHT, LEFT) ? 'right' : '';
+    if (side) return `The camera pans ${side} ${MOVE}.`;
+    return vertical ? `The camera tilts ${vertical} ${MOVE}.` : `The camera pans ${MOVE}.`;
+  }
+  return CAMERA_PHRASES[shot.camera];
+}
 const sentence = (text: string) => { const t = text.trim(); return !t ? '' : /[.!?。！？…"”'’)]$/u.test(t) ? t : `${t}.`; };
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 /** Statements end with punctuation before </d>; the words themselves are never changed. */
@@ -238,7 +252,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
           if (labelOnly(line) && englishDialogue.has(position + 1)) continue;
           if (line.trim()) parts.push(sentence(line));
         }
-        parts.push(CAMERA_PHRASES[shot.camera]);
+        parts.push(cameraPhrase(shot));
         return parts.join(' ');
       });
       const sounds = [...new Set(planned.shots.map(s => s.sound?.trim()).filter((s): s is string => !!s))].map(sentence).join(' ') || 'The natural ambient sound of the location continues throughout.';

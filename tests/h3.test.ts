@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { snapshotContext } from '../src/core';
-import { RenderPlanError, clipSeed, cutStamp, h3Frames, h3Size, outputName, parseProductionProfile, parseRenderResults, planClips, planRenderBatch, renderPackage, verifyPrompt, type RenderPlanInput } from '../src/core/h3';
+import { RenderPlanError, cameraPhrase, clipSeed, cutStamp, h3Frames, h3Size, outputName, parseProductionProfile, parseRenderResults, planClips, planRenderBatch, renderPackage, verifyPrompt, type RenderPlanInput } from '../src/core/h3';
 import { SHORT_DRAMA_DEMO, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
 import type { Localization, ProductionProfile, Revision, Shot, ShotList } from '../src/types';
 
@@ -78,6 +78,17 @@ describe('H3 prompts', () => {
     expect(zh.text).not.toContain('<d>[English]');
     expect(c01.seed).toBe(clipSeed('b1', 'c01'));
     expect(c01.frames).toBe(294);
+  });
+
+  test('pan and tilt directions follow the composition note instead of contradicting it', () => {
+    expect(cameraPhrase({camera: 'tilt', composition: 'Starts on her legs before tilting down to the floorboards.'})).toBe('The camera tilts down with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'tilt', composition: 'Rises from the boots up to her face.'})).toBe('The camera tilts up with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'tilt', composition: 'Her face in the upper frame.'})).toBe('The camera tilts with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'pan', composition: 'Her eyes flick toward the frame-right kitchen alcove.'})).toBe('The camera pans right with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'pan', composition: 'Pans down from the table to her boot.'})).toBe('The camera tilts down with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'pan', composition: 'From the left door to the right window.'})).toBe('The camera pans with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'pan'})).toBe('The camera pans with small amplitude at slow speed.');
+    expect(cameraPhrase({camera: 'push_in', composition: 'tilting down'})).toBe('The camera pushes in with small amplitude at slow speed.');
   });
 
   test('speaker IDs follow the order of speech; delivery notes stay outside <d> in English', () => {
