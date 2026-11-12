@@ -13,7 +13,14 @@ The writing comes first. A model drafts and reviews; the author decides. Every d
 - **Shot lists.** A shot list binds to one saved revision and references script lines by position instead of copying them. The program rejects gaps, overlaps and out-of-order shots. It warns about shots over 15 seconds (the longest MiniMax H3 clip), durations too short for the dialogue in any bound language, several speakers in one shot, and speaker labels that disagree with the script. Shot lists are versioned, adopted with compare-and-swap, and exported as CSV.
 - **Series continuity.** Each draft freezes the context it was written with. Only adopted earlier episodes feed later drafts, and changes upstream ask the author to recheck.
 - **Model services.** An owner-only page manages OpenAI-compatible (Chat Completions or Responses), Anthropic Messages and Google Gemini connections. Generation, review and revision can use different models. API keys are encrypted at rest and never sent back to the browser. Model errors never fall back to example text.
-- **MiniMax H3 production bridge.** The 制作 (Production) tab turns the adopted shot list into render jobs: clips of up to 15 seconds, one job per clip and voice language, each with an H3 prompt in MiniMax's published format that the program checks against the script line by line. A Python worker renders them with ComfyUI in Google Colab or on your own GPU, reached in three ways: a job package file, a worker that pulls jobs with a token, or a worker URL that Sci-epo pushes to. Videos stay in the worker's folder; Sci-epo records status, file names and durations. See the [production bridge guide](docs/production-bridge.md) and the [Colab notebook](worker/colab/sciepo_h3_worker.ipynb).
+- **Production with MiniMax H3.** The 制作 (Production) tab takes an accepted script to a delivered episode:
+  - a readiness checklist before any GPU time (a live review and its open issues, adaptations, shot-list warnings, cast portraits), passed or confirmed item by item;
+  - render batches with one job per distinct render (a clip without dialogue renders once for every language) and takes with their own seeds, so a defective clip is retaken alone;
+  - render sessions: paste a one-time code into a [one-cell Colab notebook](worker/colab/sciepo_session.ipynb); the worker installs a pinned stack, checks the GPU, renders, checks every take (loudness, silences, contact sheet, keyframes, recognized lines), uploads to Sci-epo, keeps to a time budget and releases the runtime when it ends;
+  - review with approve and retake, then cuts on the Sci-epo host with ffmpeg: levelled takes, one music track under the episode, −14 LUFS, and captions for on-screen text in each language;
+  - sign-off, a delivery report and a publication manifest that lists delivered languages.
+
+  See the [production guide](docs/production.md). The earlier worker modes (job package, worker token, push) are in the [production bridge guide](docs/production-bridge.md).
 - **Self-hosting.** One Bun process and one SQLite file. A public deployment has a single owner account with an Argon2id password, `__Host-` secure cookies and CSRF checks.
 
 The interface text is currently Simplified Chinese.
@@ -66,17 +73,19 @@ Versions up to 0.4.6 were developed in a private repository without Kiro, and pa
 
 ## Status and limits
 
-- Sci-epo does not run H3. The bridge and the worker are tested offline; a render with the real H3 model has not been verified yet, and the program-built prompts are plainer than hand-written ones.
+- Sci-epo does not run H3; workers do. One episode was rendered with the real H3 model in Colab on 2026-11-10 with the planner and the worker, before render sessions existed. Render sessions, QA and cuts are tested offline, with a local rehearsal of a real episode and a real ffmpeg cut; a GPU session through the new flow has not run yet. The program-built prompts are plainer than hand-written ones.
 - A deployment has one owner. Public registration and multi-user workspaces are not implemented.
 - Review quotation checks are structural. The model still makes the semantic judgments, and the author has to read the result.
 
 ## Next
 
-- First real H3 renders of the prepared example in Colab, and prompt changes from what they show.
+- A GPU render session of a reviewed episode through the new flow, and prompt changes from what it shows.
+- Portrait candidates rendered with SDXL in a session, and carrying approved takes over to a new batch.
 - A public demo site with prepared examples and no model calls, for judges.
 
 ## Documentation
 
+- [Production: from an accepted script to a delivered episode](docs/production.md)
 - [Self-hosting on a Linux server](docs/self-hosting.md)
 - [Model setup (中文)](docs/provider-setup.md) · [Model services page (中文)](docs/provider-management.zh-CN.md)
 - [Script quality: length and cause-and-effect checks (中文)](docs/script-quality.zh-CN.md)

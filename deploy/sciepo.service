@@ -31,8 +31,9 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=
-MemoryMax=1G
-TasksMax=128
+# Cuts run ffmpeg as a child of this service; a 1080x1920 encode needs more memory and threads than the server itself.
+MemoryMax=2G
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

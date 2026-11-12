@@ -59,9 +59,20 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Sign in and open **模型服务** (Model services). Add a connection (OpenAI-compatible Chat Completions or Responses, Anthropic Messages, or Google Gemini), add a model, run its connection test, then assign tested models to the writing, review and revision roles. API keys are encrypted with AES-256-GCM using `/var/lib/sci-epo/provider.key`, which the server creates on first start.
 
+## 6. Production
+
+Rendering happens in a worker, such as the one-cell Colab notebook; see the [production guide](production.md). The server needs:
+
+- **ffmpeg and ffprobe** for cuts: `sudo apt install ffmpeg`, or set `SCIEPO_FFMPEG` and `SCIEPO_FFPROBE` to their paths. Without them the server runs and says so, and cuts are unavailable.
+- **A font for Chinese captions**: `sudo apt install fonts-noto-cjk`, or set `SCIEPO_CAPTION_FONT` to a font file. Without one, cuts are made without captions and say so.
+- **The media folder**: `SCIEPO_MEDIA_DIR` (by default `media` next to the database, `/var/lib/sci-epo/media` with the service template) and its quota `SCIEPO_MEDIA_QUOTA_MB` (5120 by default).
+- **Request size limits** in the reverse proxy: the nginx template allows 64 MB on `/api/worker/v1/takes/` and 30 MB on the media upload route, and 300 KB everywhere else.
+
+Session codes carry `SCIEPO_PUBLIC_ORIGIN`, so a Colab worker reaches the deployment over HTTPS.
+
 ## Backups
 
-Back up the database with the SQLite backup API while the server runs, for example `sqlite3 /var/lib/sci-epo/studio.sqlite ".backup /backup/studio.sqlite"`, and keep a copy of `provider.key`. Encrypted API keys cannot be read without that file; the server refuses to start if the database has encrypted keys but the file is missing.
+Back up the database with the SQLite backup API while the server runs, for example `sqlite3 /var/lib/sci-epo/studio.sqlite ".backup /backup/studio.sqlite"`, and keep a copy of `provider.key`. Encrypted API keys cannot be read without that file; the server refuses to start if the database has encrypted keys but the file is missing. Back up the media folder together with the database: the database records each file by SHA-256, and the folder holds the files.
 
 ## Upgrades
 
