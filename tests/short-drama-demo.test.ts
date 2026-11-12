@@ -5,6 +5,7 @@ import { createApp } from '../src/server/app';
 import { demoProvider } from '../src/server/demo';
 import { SHORT_DRAMA_DEMO, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
 import { Store } from '../src/server/store';
+import { settleScript } from './settle';
 import type { Localization, ProjectBundle, Revision, ShotList } from '../src/types';
 
 const stores: Store[] = [];
@@ -18,7 +19,13 @@ function harness() {
     const response = await app(new Request('http://127.0.0.1:4317' + path, {method: body === undefined ? 'GET' : 'POST', headers: {'content-type': 'application/json'}, ...(body === undefined ? {} : {body: JSON.stringify(body)})}));
     return {status: response.status, body: await response.json()};
   };
-  return {store, call};
+  /** Script before video: accept the revision and record a passing logic check before any shot list. */
+  const settle = async (r: Revision) => {
+    const accepted = await call(`/api/episodes/${r.episodeId}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: store.get('episodes', r.episodeId)!.acceptedRevisionId ?? null, expectedContextToken: store.contextToken(store.get('episodes', r.episodeId)!), acknowledgeReview: true, acknowledgeLengthException: true});
+    expect(accepted.status).toBe(200);
+    settleScript(store, r.episodeId, r.id);
+  };
+  return {store, call, settle};
 }
 
 test('the prepared example is aligned line by line and its prepared shot list passes in both languages', () => {
@@ -40,6 +47,7 @@ for (const [language, other] of [['en', 'zh-CN'], ['zh-CN', 'en']] as const) {
     const adapted = await h.call(`/api/revisions/${r.id}/localize`, {mode: 'demo', language: other});
     expect(adapted.status).toBe(200);
     const l = adapted.body as Localization;
+    await h.settle(r);
     const created = await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'});
     expect(created.status).toBe(200);
     const list = created.body as ShotList;
@@ -56,6 +64,7 @@ test('prepared shot lists are only offered for the unmodified short-drama exampl
   const p = (await h.call('/api/projects', {...brief, language: 'en'})).body as ProjectBundle;
   const r = (await h.call(`/api/episodes/${p.episodes[0]!.id}/generate`, {mode: 'demo'})).body as Revision;
   const edited = (await h.call(`/api/revisions/${r.id}/edit`, {title: r.title, logline: r.logline, scenes: r.scenes.map((s, i) => i === 0 ? {...s, content: s.content + '\nMaya waits.'} : s)})).body as Revision;
+  await h.settle(edited);
   const refused = await h.call(`/api/revisions/${edited.id}/shot-lists`, {mode: 'demo'});
   expect(refused.status).toBe(502);
   expect(refused.body.error).toContain('未改动的固定样例');
@@ -63,5 +72,6 @@ test('prepared shot lists are only offered for the unmodified short-drama exampl
   const plain = (await h.call('/api/projects', {...episodic, language: 'en'})).body as ProjectBundle;
   const pip = (await h.call(`/api/episodes/${plain.episodes[0]!.id}/generate`, {mode: 'demo'})).body as Revision;
   expect(pip.title).toContain('One Last Burst');
+  await h.settle(pip);
   expect((await h.call(`/api/revisions/${pip.id}/shot-lists`, {mode: 'demo'})).body.error).toContain('固定短剧示例');
 });

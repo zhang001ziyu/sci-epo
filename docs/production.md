@@ -14,6 +14,12 @@ Sci-epo plans and keeps the record; the GPU work happens in a worker that Sci-ep
 | 5. Review | 制作 tab | approve a take per clip, or ask for a retake | verdicts and reasons |
 | 6. Cut | 制作 tab | choose music, check captions, sign off | the episode video, the report, the manifest |
 
+## Before production: the script logic check
+
+Sci-epo is a script workspace first, and video follows a script whose logic holds. On the review tab, **剧本逻辑检查** asks the review model to fill a ledger from the text alone: what each off-screen character's messages show she knows and where she could have learnt it; what the ending depends on and where it first appears; which setups pay off; which unusual instructions get a reason; whether each thing a character sees could be seen from where she stands; and which choices cost the protagonist something. The program, not the model, turns gaps in the ledger into findings, each with the line it concerns, a plain explanation and a way to fix it. A finding goes to the rewrite box with one click, or the author keeps it with a reason.
+
+Until the accepted revision has a check whose findings are all fixed in a new revision or kept with a reason, Sci-epo refuses the episode bible, shot-list generation and adoption, and render batches, and the shot tab says why.
+
 ## 0. From the script to the shots
 
 Each clip of about 15 seconds is rendered on its own. Without a shared description of the rooms and objects, every clip invents them again, so a room or a prop changes from one clip to the next. The shot tab has three parts that close this gap before any GPU time is spent.

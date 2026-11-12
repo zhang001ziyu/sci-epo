@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createApp } from '../src/server/app';
 import { demoProvider } from '../src/server/demo';
 import { Store } from '../src/server/store';
+import { settleScript } from './settle';
 import type { Localization, ProjectBundle, PublicRenderSession, Revision, ShotList } from '../src/types';
 
 const cleanups: (() => void)[] = [];
@@ -46,12 +47,14 @@ function harness() {
     const p = (await call('/api/projects', brief)).body as ProjectBundle, e = p.episodes[0]!;
     const r = (await call(`/api/episodes/${e.id}/generate`, {mode: 'demo'})).body as Revision;
     (await call(`/api/revisions/${r.id}/localize`, {mode: 'demo', language: 'zh-CN'})).body as Localization;
+    // Script before video: accept the revision and settle its logic before the shot list.
+    const episode = store.get('episodes', e.id)!;
+    expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
+    settleScript(store, e.id, r.id);
     const list = (await call(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'})).body as ShotList;
     await call(`/api/projects/${p.project.id}/production`, profile, 'PUT');
     const portrait = (await request(`/api/projects/${p.project.id}/media?kind=reference_image`, {method: 'PUT', body: PNG}).then(x => x.json())) as any;
     await call(`/api/projects/${p.project.id}/cast`, {name: 'MAYA', portraitAssetId: portrait.asset.id});
-    const episode = store.get('episodes', e.id)!;
-    expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
     expect((await call(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null})).status).toBe(200);
     const items = (await call(`/api/episodes/${e.id}/readiness`)).body.items as {id: string; status: string}[];
     const bundle = (await call(`/api/shot-lists/${list.id}/render-batches`, {confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)})).body as ProjectBundle;

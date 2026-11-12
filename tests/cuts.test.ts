@@ -6,6 +6,7 @@ import { createApp } from '../src/server/app';
 import { findTools, type Spawner } from '../src/server/cuts';
 import { demoProvider } from '../src/server/demo';
 import { Store } from '../src/server/store';
+import { settleScript } from './settle';
 import type { Cut, Localization, MediaAsset, ProjectBundle, PublicRenderSession, Revision, ShotList } from '../src/types';
 
 const cleanups: (() => void)[] = [];
@@ -56,12 +57,14 @@ function harness(options: {spawn?: Spawner; tools?: boolean; store?: Store; dir?
     const p = (await call('/api/projects', brief)).body as ProjectBundle, e = p.episodes[0]!;
     const r = (await call(`/api/episodes/${e.id}/generate`, {mode: 'demo'})).body as Revision;
     (await call(`/api/revisions/${r.id}/localize`, {mode: 'demo', language: 'zh-CN'})).body as Localization;
+    // Script before video: accept the revision and settle its logic before the shot list.
+    const episode = store.get('episodes', e.id)!;
+    expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
+    settleScript(store, e.id, r.id);
     const list = (await call(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'})).body as ShotList;
     await call(`/api/projects/${p.project.id}/production`, profile, 'PUT');
     const portrait = await upload(p.project.id, 'reference_image', PNG);
     await call(`/api/projects/${p.project.id}/cast`, {name: 'MAYA', portraitAssetId: portrait.asset.id});
-    const episode = store.get('episodes', e.id)!;
-    expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
     expect((await call(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null})).status).toBe(200);
     const items = (await call(`/api/episodes/${e.id}/readiness`)).body.items as {id: string; status: string}[];
     const bundle = (await call(`/api/shot-lists/${list.id}/render-batches`, {confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)})).body as ProjectBundle, batch = bundle.renderBatches!.at(-1)!;
@@ -228,12 +231,13 @@ describe.skipIf(!tools)('a real cut with ffmpeg', () => {
     const p = await json('/api/projects', brief), e = p.episodes[0];
     const r = await json(`/api/episodes/${e.id}/generate`, {mode: 'demo'});
     await json(`/api/revisions/${r.id}/localize`, {mode: 'demo', language: 'zh-CN'});
+    const episode = store.get('episodes', e.id)!;
+    await json(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true});
+    settleScript(store, e.id, r.id);
     const list = await json(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'});
     await json(`/api/projects/${p.project.id}/production`, profile, 'PUT');
     const portrait = await (await request(`/api/projects/${p.project.id}/media?kind=reference_image`, {method: 'PUT', body: PNG})).json() as {asset: MediaAsset};
     await json(`/api/projects/${p.project.id}/cast`, {name: 'MAYA', portraitAssetId: portrait.asset.id});
-    const episode = store.get('episodes', e.id)!;
-    await json(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true});
     await json(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null});
     const items = (await json(`/api/episodes/${e.id}/readiness`)).items as {id: string; status: string}[];
     const batch = (await json(`/api/shot-lists/${list.id}/render-batches`, {confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)})).renderBatches.at(-1);

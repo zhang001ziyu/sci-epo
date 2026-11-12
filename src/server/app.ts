@@ -20,6 +20,7 @@ import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
+import { latestLogicCheck, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
 
@@ -54,6 +55,8 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
  function project(pid:string){return store.get('projects',pid)??fail(404,'找不到系列。');}
  function episode(eid:string){return store.get('episodes',eid)??fail(404,'找不到集数。');}
  function revision(rid:string){return store.get('revisions',rid)??fail(404,'找不到剧本版本。');}
+ /** Script before video: shot lists, the episode bible and render batches wait until the script's logic is settled. */
+ function scriptFirst(e:Episode){const gate=logicGate(e,store.all('logic_checks').filter(c=>c.episodeId===e.id));if(!gate.passed)fail(409,gate.message);}
  function context(e:Episode){
   const p=project(e.projectId);
   const previous=store.all('episodes').filter(x=>x.projectId===p.id && x.ordinal<e.ordinal && x.acceptedRevisionId).sort((a,b)=>a.ordinal-b.ordinal);
@@ -304,11 +307,13 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    if(body.expectedShotListId!==(e.productionShotListId??null))return fail(409,'制作用分镜表已在其他页面更改，请刷新后重新选择。');
    if(list.episodeId!==e.id)return fail(400,'该分镜表不属于本集。');
    if(list.sourceRevisionId!==e.acceptedRevisionId||e.needsReview)return fail(409,'只能采用基于本集当前定稿的分镜表；请先采用并复核这一版剧本。');
+   scriptFirst(e);
    store.update('episodes',{...e,productionShotListId:list.id});return store.bundle(e.projectId);
   }
   if(a==='episodes'&&target&&(action==='bible-draft'||action==='bible')&&method==='POST'){
    const e=episode(target);
    if(!e.acceptedRevisionId||e.needsReview)return fail(409,'先采用并复核本集定稿，再整理本集设定。');
+   scriptFirst(e);
    const r=revision(e.acceptedRevisionId);
    if(action==='bible-draft'){
     if(e.bible?.confirmedAt&&e.bible.revisionId===r.id&&body.replaceConfirmed!==true)return fail(409,'本集设定已经确认过。重新起草会替换它，请确认后再试。');
@@ -325,6 +330,14 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    const confirmedAt=body.confirm?(same&&old!.confirmedAt?old!.confirmedAt:now()):undefined;
    const bible={...content,revisionId:r.id,mode:same?old!.mode:'manual' as const,createdAt:same?old!.createdAt:now(),...(confirmedAt?{confirmedAt}:{})};
    store.update('episodes',{...e,bible});return store.bundle(e.projectId);
+  }
+  if(a==='logic-checks'&&target&&action==='keep'&&method==='POST'){
+   const check=store.get('logic_checks',target)??fail(404,'找不到这次剧本逻辑检查。'),findingId=str(body.findingId,'问题编号',200);
+   if(!check.findings.some(f=>f.id===findingId))return fail(404,'这次检查里没有这个问题。');
+   const kept={...check.kept};
+   if(body.reason===null)delete kept[findingId];
+   else{const reason=str(body.reason,'保留的理由',300).trim();if(!reason)return fail(400,'请写明为什么保留。');kept[findingId]={reason,at:now()};}
+   store.update('logic_checks',{...check,kept});return store.bundle(episode(check.episodeId).projectId);
   }
   if(a==='shot-lists'&&target&&action==='review'&&method==='POST'){
    const list=store.get('shot_lists',target)??fail(404,'找不到分镜表。'),e=episode(list.episodeId),shotId=str(body.shotId,'镜头编号',40);
@@ -372,12 +385,23 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   if(a==='revisions'&&target&&method==='POST'){
    const r=revision(target),e=episode(r.episodeId);
    if(action==='shot-lists'){
+    if(r.id!==e.acceptedRevisionId)return fail(409,'先把剧本捋顺：分镜表只为本集已采用的定稿生成。请先在剧本页采用这一版。');
+    scriptFirst(e);
     const voiceLanguages=project(e.projectId).voiceLanguages??[scriptLanguage(r)];
     const bible=confirmedBible(e,r);
     return model(e,body,{kind:'storyboard',context:r.context,revision:r,episodeTitle:e.title,...(bible?{bible:{locations:bible.locations,props:bible.props,scenes:bible.scenes}}:{})},(raw,mode)=>{
      let content;try{content=parseShotListOutput(raw,r);}catch(error){throw new HttpError(502,`分镜表未通过校验：${error instanceof Error?error.message:''}原稿已保留。`);}
      const adaptations=Object.fromEntries(Object.entries(newestAlignedAdaptations(r,store.all('localizations'),voiceLanguages)).map(([language,l])=>[language,l.id]));
      return store.insert('shot_lists',{...content,id:id(),episodeId:e.id,sourceRevisionId:r.id,parentId:null,aspectRatio:aspectRatioOf(r.context.brief),voiceLanguages,adaptations,mode,createdAt:now()});
+    });
+   }
+   if(action==='logic-check'){
+    return model(e,body,{kind:'logic',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
+     let ledger;try{ledger=parseLedgerOutput(raw,r);}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
+     const findings=logicFindings(ledger,r),previous=latestLogicCheck(store.all('logic_checks'),r.id);
+     // A reason the author gave for the same finding of this revision still holds.
+     const kept=Object.fromEntries(Object.entries(previous?.kept??{}).filter(([fid])=>findings.some(f=>f.id===fid)));
+     return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
     });
    }
    if(action==='localize'){

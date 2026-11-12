@@ -1,6 +1,6 @@
 /** Prepared vertical short-drama example in English and line-aligned Simplified Chinese.
  * One set of line references serves both languages. This is fixture text, not model output. */
-import type { Revision, ShotListContent } from '../types';
+import type { LogicLedger, Revision, ShotListContent } from '../types';
 
 export const SHORT_DRAMA_DEMO = {
   en: {
@@ -81,4 +81,21 @@ export function isShortDramaDemo(revision: Pick<Revision, 'title' | 'scenes'>, l
   const fixed = SHORT_DRAMA_DEMO[language];
   return revision.title === fixed.title && revision.scenes.length === fixed.scenes.length
     && revision.scenes.every((s, i) => s.id === fixed.scenes[i]!.id && s.heading === fixed.scenes[i]!.heading && s.content === fixed.scenes[i]!.content);
+}
+
+/** The prepared logic ledger of the fixed example: every message has a source, every setup pays off, and Maya sings
+ * for free, so the check finds nothing. Line references are the same in both languages. */
+export function shortDramaDemoLedger(language: 'en' | 'zh'): LogicLedger {
+  const en = language === 'en';
+  return {
+    protagonist: en ? 'MAYA' : '玛雅',
+    offscreen: [{character: en ? 'ANNA LIN' : '林安娜', messageRef: 's3:4', claims: [{fact: en ? 'she is in the hospital' : '她在住院', sourceKind: 'self', sourceRef: null}]},
+      {character: en ? 'ANNA LIN' : '林安娜', messageRef: 's1:2', claims: [{fact: en ? 'her father thinks everyone forgot his birthday' : '父亲以为大家都忘了他的生日', sourceKind: 'brief', sourceRef: null}]}],
+    ending: {ref: 's3:5', question: en ? 'Will Maya keep Anna\'s secret from Leo?' : '玛雅会一直替安娜瞒着老林吗？',
+      dependsOn: [{thing: en ? 'Anna is Leo\'s daughter' : '安娜是老林的女儿', kind: 'relationship', firstRef: 's2:5'}, {thing: en ? 'the hospital message' : '住院的消息', kind: 'fact', firstRef: 's3:4'}]},
+    setups: [{thing: en ? 'the order note' : '订单备注', ref: 's1:2', payoffRef: 's2:6', bearsOnEnding: true}, {thing: en ? 'the cupcake' : '纸杯蛋糕', ref: 's1:1', payoffRef: 's2:7', bearsOnEnding: false}],
+    instructions: [{text: en ? 'Please sing happy birthday' : '请帮我唱一首生日歌', ref: 's1:2', reasonRef: 's1:2'}],
+    sightings: [{who: en ? 'MAYA' : '玛雅', what: en ? 'the message on her phone' : '手机上的消息', ref: 's3:2', visible: 'yes', why: en ? 'it is on the phone in her hand' : '消息就在她手里的手机上'}],
+    choices: [{ref: 's2:6', choice: en ? 'Maya sings although singing costs extra' : '唱歌本来要加钱，玛雅还是唱了', cost: en ? 'she gives away what she said she charges for' : '她白白做了本该加钱的事'}],
+  };
 }

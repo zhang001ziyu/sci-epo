@@ -7,6 +7,7 @@ import { normalizeSpeakerName } from '../core/scriptLines';
 import { planJobsV2, takeSeed } from '../core/renderPlan';
 import { readinessItems, unconfirmedItems } from '../core/readiness';
 import { confirmedBible } from '../core/bible';
+import { logicGate } from '../core/logic';
 import { boundAdaptations, shotListStatus } from '../core/shotList';
 import type { MediaStore } from './media';
 import { DEFAULT_STACK_ID, RENDER_SIZES, type Stacks } from './stacks';
@@ -60,7 +61,7 @@ export class Production {
     const revision = episode.acceptedRevisionId ? this.store.get('revisions', episode.acceptedRevisionId) : undefined;
     const list = episode.productionShotListId ? this.store.get('shot_lists', episode.productionShotListId) : undefined;
     const shotReview = list ? this.store.get('shot_reviews', list.id) : undefined;
-    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: this.store.all('reviews').filter(r => r.revisionId === revision?.id),
+    return readinessItems({episode, logicChecks: this.store.all('logic_checks').filter(c => c.episodeId === episode.id), ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: this.store.all('reviews').filter(r => r.revisionId === revision?.id),
       localizations: this.store.all('localizations').filter(l => l.sourceRevisionId === revision?.id), ...(project.production ? {profile: project.production} : {}), ...(languages ? {languages} : {})});
   }
 
@@ -160,6 +161,8 @@ export class Production {
     const list = this.store.get('shot_lists', listId) ?? this.fail(404, '找不到分镜表。');
     const episode = this.store.get('episodes', list.episodeId) ?? this.fail(404, '找不到集数。');
     if (!shotListStatus(list, episode).current) this.fail(409, '只有当前制作版本的分镜表才能生成渲染任务。请先在分镜页采用它，并确认本集定稿没有变化。');
+    const gate = logicGate(episode, this.store.all('logic_checks').filter(c => c.episodeId === episode.id));
+    if (!gate.passed) this.fail(409, gate.message);
     const revision = this.store.get('revisions', list.sourceRevisionId) ?? this.fail(404, '找不到剧本版本。');
     const project = this.store.get('projects', episode.projectId) ?? this.fail(404, '找不到系列。');
     const languages = body.languages === undefined ? undefined : Array.isArray(body.languages) && body.languages.length <= 6 && body.languages.every(l => typeof l === 'string') ? body.languages as string[] : this.fail(400, '配音语言格式无效。');

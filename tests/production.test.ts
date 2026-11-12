@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createApp } from '../src/server/app';
 import { demoProvider } from '../src/server/demo';
 import { Store } from '../src/server/store';
+import { settleScript } from './settle';
 import type { Localization, ProjectBundle, Revision, ShotList } from '../src/types';
 
 const stores: Store[] = [];
@@ -25,12 +26,18 @@ function harness(options: {transport?: typeof fetch} = {}) {
     const p = (await call('/api/projects', brief)).body as ProjectBundle, e = p.episodes[0]!;
     const r = (await call(`/api/episodes/${e.id}/generate`, {mode: 'demo'})).body as Revision;
     const l = (await call(`/api/revisions/${r.id}/localize`, {mode: 'demo', language: 'zh-CN'})).body as Localization;
+    // Script before video: the shot list is made for the accepted revision once its logic is settled.
+    await accept(r);
+    settleScript(store, r.episodeId, r.id);
     const list = (await call(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'})).body as ShotList;
     return {p, e, r, l, list};
   }
-  async function adopt(r: Revision, list: ShotList) {
+  async function accept(r: Revision) {
     const episode = store.get('episodes', r.episodeId)!;
     expect((await call(`/api/episodes/${r.episodeId}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: episode.acceptedRevisionId, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
+  }
+  async function adopt(r: Revision, list: ShotList) {
+    if (store.get('episodes', r.episodeId)!.acceptedRevisionId !== r.id) await accept(r);
     expect((await call(`/api/episodes/${r.episodeId}/production-shot-list`, {shotListId: list.id, expectedShotListId: store.get('episodes', r.episodeId)!.productionShotListId ?? null})).status).toBe(200);
   }
   async function ready() {

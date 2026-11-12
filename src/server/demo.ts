@@ -1,7 +1,7 @@
 import type { ModelProvider, ModelRequest } from '../types';
 import { DIMENSIONS } from '../types';
 import { isShortDrama } from '../core/formats';
-import { SHORT_DRAMA_DEMO, isShortDramaDemo, shortDramaDemoShotList } from './shortDramaDemo';
+import { SHORT_DRAMA_DEMO, isShortDramaDemo, shortDramaDemoLedger, shortDramaDemoShotList } from './shortDramaDemo';
 const SCENES=[
  {id:'s1',heading:'内景 · 轨道杂务局 · 夜',content:'派普把一块写着“维修员生日”的小蛋糕塞进保温盒。七号盯着排班表。\n\n七号：她今晚休假。\n派普：休假还给我换了左膝轴承。\n\n派普屈膝，没再响。他扣好保温盒。',locked:false},
  {id:'s2',heading:'外景 · 维修通道 · 连续',content:'蛋糕盒被排风口卷向舱外。派普按下背包按钮，一道短焰把他推向盒子。他抱住蛋糕，燃料表归零。\n\n背包仅有的一次喷射已经耗尽。\n七号（通话）：回来得另想办法。',locked:false},
@@ -30,6 +30,7 @@ export const demoProvider:ModelProvider={mode:'demo',async complete(req:ModelReq
  if(revision&&[SHORT_DRAMA_DEMO.en.title,SHORT_DRAMA_DEMO.zh.title].includes(revision.title)){
   if(!isShortDramaDemo(revision,en?'en':'zh'))throw new DemoError('预置短剧示例只适用于未改动的固定样例；自写或已修改剧本请使用真实模型。');
   if(req.kind==='storyboard')return JSON.stringify(shortDramaDemoShotList(en?'en':'zh'));
+  if(req.kind==='logic')return JSON.stringify(shortDramaDemoLedger(en?'en':'zh'));
   if(req.kind==='localize'){
    if(!['en','zh-CN'].includes(req.targetLanguage??''))throw new DemoError('预置短剧示例只提供英文和简体中文的逐行对齐版本。');
    return JSON.stringify(SHORT_DRAMA_DEMO[req.targetLanguage==='en'?'en':'zh']);

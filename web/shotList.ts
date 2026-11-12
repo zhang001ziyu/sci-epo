@@ -7,6 +7,7 @@ import { languageName, scriptLanguage } from '../src/core/languages';
 import { isLineAligned } from '../src/core/scriptLines';
 import { boundAdaptations, mergeWithNext, newestAlignedAdaptations, parseShotList, sceneDifferences, shotListStatus, shotListWarnings, shotNeeds, shotTexts, splitShot, totalDuration, type ShotView, type ShotWarning } from '../src/core/shotList';
 import { confirmedBible } from '../src/core/bible';
+import { logicGate } from '../src/core/logic';
 import { BiblePanel } from './bible';
 import { fixButtons, reviewView } from './shotReview';
 
@@ -67,9 +68,11 @@ export class ShotListPanel {
     const {bundle, revision, episode, busy, live, dirty} = ctx, lists = this.lists(ctx), list = this.selected(ctx);
     this.syncDraft(ctx, list);
     const disabled = (condition = false) => busy || condition ? 'disabled' : '';
+    const gate = logicGate(episode, bundle.logicChecks), locked = !gate.passed;
     const ratio = list?.aspectRatio ?? aspectRatioOf(revision.context.brief);
-    const generate = `<button class="button primary" data-action="shots-generate" data-mode="live" ${disabled(!live || dirty || this.editing)}>${lists.length ? '重新生成分镜表' : '生成分镜表'}</button>${revision.mode === 'demo' ? `<button class="text-button" data-action="shots-generate" data-mode="demo" ${disabled(dirty || this.editing)}>载入预置分镜表 →</button>` : ''}`;
-    const bibleView = this.bible.view({bundle, revision, episode, busy, live});
+    const generate = `<button class="button primary" data-action="shots-generate" data-mode="live" ${disabled(!live || dirty || this.editing || locked)}>${lists.length ? '重新生成分镜表' : '生成分镜表'}</button>${revision.mode === 'demo' ? `<button class="text-button" data-action="shots-generate" data-mode="demo" ${disabled(dirty || this.editing || locked)}>载入预置分镜表 →</button>` : ''}`;
+    const lockBanner = gate.passed ? '' : `<div class="inline-warning script-first" role="status"><strong>先把剧本捋顺，再做分镜和视频。</strong> ${esc(gate.message)} <button class="text-button" data-action="tab" data-id="review">去审读页 →</button></div>`;
+    const bibleView = lockBanner + this.bible.view({bundle, revision, episode, busy: busy || locked, live});
     const intro = `<div class="section-title"><div><div class="eyebrow">SHOT LIST · ${esc(ratio)}</div><h2>一镜一镜，先配音再出画。</h2></div><div class="header-actions">${generate}</div></div><p class="muted">分镜表引用剧本的行，不改写台词。时长是估计值，配音后以实测为准。</p>${dirty ? '<div class="inline-warning">剧本有未保存的编辑。先保存为新版本，再为它生成分镜表。</div>' : ''}${!live ? '<p class="small muted">写作模型尚未配置，暂时只能载入预置示例。</p>' : ''}`;
     if (!list) return `<section class="shots-view">${bibleView}${intro}${this.previousNotice(ctx)}<div class="empty-panel"><span class="empty-mark">▯</span><h3>这一版还没有分镜表</h3><p>生成后，每个镜头都会绑定剧本的具体几行，并按配音语言对照台词。</p></div></section>`;
     const status = shotListStatus(list, episode), content: ShotListContent = this.draft ?? list;
@@ -83,7 +86,7 @@ export class ShotListPanel {
     const versions = lists.length > 1 ? `<label class="sr-only" for="shot-list-version">分镜表版本</label><select id="shot-list-version" ${disabled(this.editing)}>${lists.map((l, i) => `<option value="${esc(l.id)}" ${l.id === list.id ? 'selected' : ''}>V${i + 1} · ${esc(MODE_LABELS[l.mode] ?? l.mode)} · ${esc(date(l.createdAt))}</option>`).join('')}</select>` : `<span class="small muted">V1 · ${esc(MODE_LABELS[list.mode] ?? list.mode)} · ${esc(date(list.createdAt))}</span>`;
     const actions = this.editing
       ? `<button class="button primary" data-action="shots-save" ${disabled()}>保存为新版本</button><button class="button subtle" data-action="shots-cancel" ${disabled()}>放弃修改</button>`
-      : `<button class="button" data-action="shots-adopt" ${disabled(!status.adoptable)}>采用为制作版本</button>${hint}<button class="button subtle" data-action="shots-edit" ${disabled()}>修改分镜表</button><a class="button subtle" href="/api/shot-lists/${encodeURIComponent(list.id)}/export" download>导出 CSV ↗</a>`;
+      : `<button class="button" data-action="shots-adopt" ${disabled(!status.adoptable || locked)}>采用为制作版本</button>${hint}<button class="button subtle" data-action="shots-edit" ${disabled()}>修改分镜表</button><a class="button subtle" href="/api/shot-lists/${encodeURIComponent(list.id)}/export" download>导出 CSV ↗</a>`;
     const page = this.editing ? 'list' : this.page;
     const pages = `<div class="page-switch" role="group" aria-label="分镜页视图"><button class="button small-button ${page === 'list' ? 'primary' : 'subtle'}" data-action="shots-page" data-id="list" ${disabled(this.editing)}>分镜表</button><button class="button small-button ${page === 'review' ? 'primary' : 'subtle'}" data-action="shots-page" data-id="review" ${disabled(this.editing)}>逐镜确认（开 GPU 前）</button></div>`;
     const toolbar = `<div class="shots-toolbar">${versions}${pill}${actions}</div>${pages}`;

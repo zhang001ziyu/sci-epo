@@ -140,7 +140,7 @@ export class ProviderManager {
   ready():boolean {try {const roles=this.routing().roles;return !!roles&&CREATIVE_ROLES.every(role=>{this.config(roles[role],true);return true;});}catch{return false;}}
   resolve(kind:ModelRequest['kind']) {
     // Shot lists use the writing role, so existing published role assignments stay complete.
-    const role:CreativeRole=kind==='generate'||kind==='storyboard'||kind==='bible'?'writing':kind==='review'?'quality':'revision',routing=this.routing();
+    const role:CreativeRole=kind==='generate'||kind==='storyboard'||kind==='bible'?'writing':kind==='review'||kind==='logic'?'quality':'revision',routing=this.routing();
     if(!routing.roles)return fail(503,'请先在模型服务页面完成角色分配。');
     const ref=routing.roles[role],{config,model,connection}=this.config(ref,true);
     const snapshot:ModelSnapshot={routingVersion:routing.version,role,modelRef:ref,connectionRef:{id:connection.id,revision:connection.revision},modelName:model.config.name,modelId:model.config.modelId,connectionName:connection.config.name,protocol:connection.config.protocol};

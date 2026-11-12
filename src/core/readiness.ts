@@ -1,8 +1,9 @@
 /** The readiness checklist of an episode before a render batch: what has passed, what warns and what fails, with the
  * tab where the author fixes it. A batch needs every item to pass, or the author's confirmation of the rest.
  * Browser-safe, so the production tab shows the same items the server checks. */
-import type { Episode, Localization, ProductionProfile, ReadinessItem, Review, Revision, ShotList, ShotReview } from '../types';
+import type { Episode, Localization, LogicCheck, ProductionProfile, ReadinessItem, Review, Revision, ShotList, ShotReview } from '../types';
 import { bibleNotes, bibleState, confirmedBible } from './bible';
+import { logicGate } from './logic';
 import { languageName, scriptLanguage } from './languages';
 import { reviewProgress } from './shotReview';
 import { normalizeSpeakerName } from './scriptLines';
@@ -17,6 +18,8 @@ export interface ReadinessInput {
   revision?: Revision;
   /** The production shot list, when there is one. */
   list?: ShotList;
+  /** Script logic checks of the episode. */
+  logicChecks?: LogicCheck[];
   /** The author's shot-by-shot check of the production shot list. */
   shotReview?: ShotReview;
   reviews: Review[];
@@ -42,6 +45,10 @@ export function readinessItems(input: ReadinessInput): ReadinessItem[] {
     ? {id: 'accepted', status: 'passed', message: '本集已采用定稿，前面没有需要复核的改动。', link: {tab: 'script'}}
     : {id: 'accepted', status: 'failed', message: episode.needsReview ? '本集因上游修改需要复核，请重新审读并采用定稿。' : '本集还没有采用定稿。', link: {tab: 'script'}});
   if (!revision) return items;
+  const gate = logicGate(episode, input.logicChecks);
+  items.push(gate.passed
+    ? {id: 'logic', status: 'passed', message: `剧本逻辑检查已处理完：${gate.check.findings.length ? `${gate.check.findings.length} 个问题都写明了保留理由`: '没有发现断开的地方'}。`, link: {tab: 'review'}}
+    : {id: 'logic', status: 'failed', message: gate.message, link: {tab: 'review'}});
 
   // The newest review of the accepted revision; a newer accepted revision needs its own.
   const review = input.reviews.filter(r => r.revisionId === revision.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);

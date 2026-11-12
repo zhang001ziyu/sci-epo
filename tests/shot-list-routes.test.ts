@@ -5,6 +5,7 @@ import { createApp } from '../src/server/app';
 import { ModelError } from '../src/server/provider';
 import { ProviderManager } from '../src/server/providerManager';
 import { Store } from '../src/server/store';
+import { settleScript } from './settle';
 import type { Localization, ModelRequest, ProjectBundle, Revision, ShotList, ShotListContent } from '../src/types';
 
 const stores: Store[] = [];
@@ -49,12 +50,18 @@ function harness() {
   }
   const accept = async (r: Revision, expected: string | null = null) =>
     call(`/api/episodes/${r.episodeId}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: expected, expectedContextToken: store.contextToken(store.get('episodes', r.episodeId)!), acknowledgeReview: true, acknowledgeLengthException: true});
-  return {store, requests, demoCalls, raw, call, setup, accept, setStoryboard(fn: typeof storyboard) { storyboard = fn; }};
+  /** Script before video: accept the revision and record a passing logic check before any shot list. */
+  const settle = async (r: Revision, expected: string | null = null) => {
+    expect((await accept(r, expected)).status).toBe(200);
+    settleScript(store, r.episodeId, r.id);
+  };
+  async function ready() { const s = await setup(); await settle(s.r); return s; }
+  return {store, requests, demoCalls, raw, call, setup, ready, accept, settle, setStoryboard(fn: typeof storyboard) { storyboard = fn; }};
 }
 
 describe('shot-list generation', () => {
   test('binds the shot list to the revision, its frozen frame and the newest aligned adaptation', async () => {
-    const h = harness(), {r, l} = await h.setup();
+    const h = harness(), {r, l} = await h.ready();
     const result = await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'});
     expect(result.status).toBe(200);
     const list = result.body as ShotList;
@@ -67,7 +74,7 @@ describe('shot-list generation', () => {
   });
 
   test('invalid output and model errors fail the run without saving or substituting the demo', async () => {
-    const h = harness(), {r} = await h.setup();
+    const h = harness(), {r} = await h.ready();
     h.setStoryboard(async () => JSON.stringify({...shots(), shots: shots().shots.slice(0, 3)}));
     const invalid = await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'});
     expect(invalid.status).toBe(502);
@@ -82,7 +89,7 @@ describe('shot-list generation', () => {
 
 describe('shot-list versions, adoption and export', () => {
   test('edits save new immutable versions that keep shot IDs; invalid edits change nothing', async () => {
-    const h = harness(), {r, l} = await h.setup();
+    const h = harness(), {r, l} = await h.ready();
     const first = (await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'})).body as ShotList;
     const edited = shots(); edited.shots[1]!.durationSeconds = 3.5;
     const second = await h.call(`/api/shot-lists/${first.id}/edit`, {...edited, adaptations: {'zh-CN': l.id}});
@@ -98,11 +105,15 @@ describe('shot-list versions, adoption and export', () => {
 
   test('adoption requires the accepted revision and rejects stale tabs; a newer accepted script makes it not current', async () => {
     const h = harness(), {p, episode, r} = await h.setup();
+    // Script before video: an unaccepted revision gets no shot list at all.
+    const early = await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'});
+    expect(early.status).toBe(409);
+    expect(early.body.error).toContain('先把剧本捋顺');
+    expect(h.store.all('shot_lists')).toHaveLength(0);
+    await h.settle(r);
     const first = (await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'})).body as ShotList;
     const second = (await h.call(`/api/shot-lists/${first.id}/edit`, {...shots(), adaptations: {}})).body as ShotList;
     const adopt = (shotListId: string, expectedShotListId: string | null) => h.call(`/api/episodes/${episode.id}/production-shot-list`, {shotListId, expectedShotListId});
-    expect((await adopt(first.id, null)).status).toBe(409);
-    expect((await h.accept(r)).status).toBe(200);
     const adopted = await adopt(first.id, null);
     expect(adopted.status).toBe(200);
     expect((adopted.body as ProjectBundle).episodes[0]!.productionShotListId).toBe(first.id);
@@ -115,10 +126,12 @@ describe('shot-list versions, adoption and export', () => {
     const current = h.store.get('episodes', episode.id)!;
     expect(current.productionShotListId).toBe(second.id);
     expect(shotListStatus(h.store.get('shot_lists', second.id)!, current)).toEqual({adopted: true, current: false, adoptable: false});
+    // A list of a revision that is no longer the accepted one cannot be adopted.
+    expect((await adopt(first.id, second.id)).status).toBe(409);
   });
 
   test('export is a CSV attachment with a byte order mark and both languages', async () => {
-    const h = harness(), {r} = await h.setup();
+    const h = harness(), {r} = await h.ready();
     const list = (await h.call(`/api/revisions/${r.id}/shot-lists`, {mode: 'live'})).body as ShotList;
     const response = await h.raw(`/api/shot-lists/${list.id}/export`);
     expect(response.status).toBe(200);

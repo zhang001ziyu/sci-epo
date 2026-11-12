@@ -205,7 +205,7 @@ export class ProductionPanel {
   private readiness(ctx: ProductionContext): ReadinessItem[] {
     const {episode, bundle} = ctx, revision = bundle.revisions.find(r => r.id === episode.acceptedRevisionId), list = productionList(bundle, episode).list;
     const shotReview = list ? bundle.shotReviews?.find(r => r.id === list.id) : undefined;
-    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: bundle.reviews, localizations: bundle.localizations,
+    return readinessItems({episode, logicChecks: bundle.logicChecks ?? [], ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: bundle.reviews, localizations: bundle.localizations,
       ...(bundle.project.production ? {profile: bundle.project.production} : {}), ...(this.languages ? {languages: this.languages} : {})});
   }
 

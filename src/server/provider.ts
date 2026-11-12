@@ -51,7 +51,7 @@ export function loadProviderConfig(env: Env): ProviderConfig | undefined {
     timeoutMs:numberSetting(env.SCIEPO_MODEL_TIMEOUT_MS ?? env.AI_NOVEL_LLM_TIMEOUT_MS,180000,1000,1200000) });
 }
 export function forRole(base: ProviderConfig, env: Env, kind: ModelRequest['kind']): ProviderConfig {
-  const role = {generate:'WRITING',rewrite:'REVISION',review:'QUALITY',localize:'REVISION',storyboard:'WRITING',bible:'WRITING'}[kind];
+  const role = {generate:'WRITING',rewrite:'REVISION',review:'QUALITY',localize:'REVISION',storyboard:'WRITING',bible:'WRITING',logic:'QUALITY'}[kind];
   const read = (suffix: string) => env[`SCIEPO_MODEL_${role}_${suffix}`] ?? env[`AI_NOVEL_${role}_${suffix === 'ID' ? 'MODEL' : suffix}`];
   const enabled = read('ENABLED');
   if (enabled === undefined || enabled === 'false') return base;
@@ -187,7 +187,7 @@ async function readResponse(response:Response,protocol:Protocol):Promise<string>
 /** Optional fetch injection is for deterministic transport tests, never browser configuration. */
 export function createLiveProvider(env:Env=process.env,fetchImpl:typeof fetch=fetch):ModelProvider|undefined {
   const base=loadProviderConfig(env);if(!base)return undefined;
-  const configs = Object.fromEntries((['generate','review','rewrite','localize','storyboard','bible'] as const).map(kind=>[kind,forRole(base,env,kind)])) as Record<ModelRequest['kind'],ProviderConfig>;
+  const configs = Object.fromEntries((['generate','review','rewrite','localize','storyboard','bible','logic'] as const).map(kind=>[kind,forRole(base,env,kind)])) as Record<ModelRequest['kind'],ProviderConfig>;
   return {mode:'live',complete:request=>send(configs[request.kind],buildModelMessages(request),'json_object',fetchImpl)};
 }
 /** A single immutable configuration serves every pass of one writing operation. */

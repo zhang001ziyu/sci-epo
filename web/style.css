@@ -121,3 +121,4 @@
 .line-kind{font-size:11px;color:var(--muted)}.review-line.dialogue .line-kind{color:var(--accent)}.review-line.screen .line-kind{color:var(--success)}
 .review-actions{display:flex;gap:10px}
 @media(max-width:700px){.bible-item,.bible-scene-row{grid-template-columns:1fr}.review-line{grid-template-columns:1fr}}
+.logic-panel{margin:0 0 26px;padding:16px 18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper)}.logic-findings{margin:12px 0;padding-left:20px;display:grid;gap:12px}.logic-finding{display:grid;gap:5px}.logic-finding p{margin:0}.logic-finding.kept{opacity:.75}.logic-finding .language-toolbar input{flex:1;min-width:220px}.inline-success{padding:12px 14px;background:#e5eee5;color:var(--success);border:1px solid #c4d6c6;border-radius:5px;font-size:12px;margin:13px 0}

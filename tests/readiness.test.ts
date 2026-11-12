@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { snapshotContext } from '../src/core';
 import { openIssues, readinessItems, unconfirmedItems } from '../src/core/readiness';
-import { SHORT_DRAMA_DEMO, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
-import type { Episode, EpisodeBible, Localization, ProductionProfile, Review, Revision, ShotList, ShotReview } from '../src/types';
+import { SHORT_DRAMA_DEMO, shortDramaDemoLedger, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
+import type { Episode, EpisodeBible, Localization, LogicCheck, ProductionProfile, Review, Revision, ShotList, ShotReview } from '../src/types';
 
 const time = '2026-11-12T08:00:00.000Z';
 const brief = {title: 'Last Order', premise: 'A rider.', characters: 'MAYA, LEO', worldRules: 'City.', authorRules: 'Reveal.', language: 'en', format: 'vertical_short_drama' as const};
@@ -22,13 +22,16 @@ const profile: ProductionProfile = {style: '', music: '', characters: [
 const review = (overrides: Partial<Review> = {}): Review => ({id: 'rv1', revisionId: 'r1', status: 'completed', errors: [], mode: 'live', createdAt: time,
   assessments: [{dimension: 'story', status: 'issue', explanation: 'Anna knows about the match without any way to see it.', evidence: []}, {dimension: 'dialogue', status: 'no_issue', explanation: 'ok', evidence: []}],
   causality: {status: 'completed', errors: [], checks: [{sceneId: 's2', state: '', choice: '', obstacleKind: 'none', alternative: '', verdict: 'gap', explanation: 'Why not call 911?', evidence: [], constraintEvidence: []}]}, ...overrides});
+const logic: LogicCheck = {id: 'lc1', revisionId: 'r1', episodeId: 'e1', mode: 'live', ledger: shortDramaDemoLedger('en'), findings: [], createdAt: time};
 const ids = (items: {id: string; status: string}[], status: string) => items.filter(i => i.status === status).map(i => i.id);
 
 describe('readiness', () => {
   test('a reviewed, adopted episode with portraits passes; open issues and missing descriptions warn', () => {
-    const items = readinessItems({episode, revision, list, shotReview, reviews: [review()], localizations: [zh], profile});
+    const items = readinessItems({episode, revision, list, shotReview, logicChecks: [logic], reviews: [review()], localizations: [zh], profile});
     expect(ids(items, 'failed')).toEqual(['portrait:LEO']);
-    expect(ids(items, 'passed')).toEqual(expect.arrayContaining(['accepted', 'review', 'bible', 'shot_list', 'shot_review', 'adaptation:zh-CN', 'portrait:MAYA']));
+    // Script before video: without a logic check of the accepted revision, the script is not settled.
+    expect(readinessItems({episode, revision, list, shotReview, reviews: [review()], localizations: [zh], profile}).find(i => i.id === 'logic')).toMatchObject({status: 'failed', message: expect.stringContaining('先把剧本捋顺')});
+    expect(ids(items, 'passed')).toEqual(expect.arrayContaining(['accepted', 'logic', 'review', 'bible', 'shot_list', 'shot_review', 'adaptation:zh-CN', 'portrait:MAYA']));
     expect(ids(items, 'warning')).toEqual(expect.arrayContaining(['issue:assessment:story', 'issue:causal:s2:0', 'appearance:LEO', 'voice:LEO']));
     expect(items.find(i => i.id === 'issue:assessment:story')).toMatchObject({link: {tab: 'review'}, message: expect.stringContaining('Anna knows')});
     expect(openIssues(review()).map(i => i.id)).toEqual(['issue:assessment:story', 'issue:causal:s2:0']);
