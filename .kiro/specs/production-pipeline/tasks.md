@@ -11,7 +11,7 @@ Status: proposed, not started. Milestones 1–3 make the flow usable end to end;
     - _Requirements: 1.1, 1.2, 1.4_
   - [ ] 1.3 Require passed or confirmed items when a batch is created, and store the readiness record with the batch.
     - _Requirements: 1.3_
-  - [ ] 1.4 Add the five short-drama review checks, `examples/the-last-order-draft.json` with its expected findings, and `scripts/smoke-live.ts --fixture`.
+  - [ ] 1.4 Add the five short-drama review checks, `examples/last-order-draft.json` with its expected findings, and `scripts/review-fixture.ts`.
     - _Requirements: 1.7, 1.8_
 - [ ] 2. Media store
   - [ ] 2.1 Add the `media_assets` table, the media folder, streaming uploads, hashing, signature checks and the quota.

@@ -1,0 +1,92 @@
+{
+  "title": "The Last Order · Flawed Draft",
+  "about": "A hand-written vertical short-drama draft for review tests. It reproduces the logic problems of a generated first draft: the scenes play, but the causal chain breaks. A review of this draft should find each problem in expected_findings. The draft is not meant to be fixed here; it is the test input.",
+  "format": "vertical_short_drama",
+  "language": "en",
+  "brief": {
+    "title": "The Last Order",
+    "premise": "Maya delivers food at night. Every order pulls her into a stranger's family business. Each episode opens on an odd order note and ends on a secret she has to follow up.",
+    "characters": "MAYA: a delivery rider in her twenties, paying off a debt, sharp-tongued but kind; anything outside the rules costs extra.\nLEO: seventy, lives alone, has not spoken to his daughter Anna in five years, proud and afraid of pity.",
+    "worldRules": "An ordinary city with nothing supernatural. The delivery app shows the customer, the payer and the order note. A rider knows only what the screen says and what she sees herself.",
+    "authorRules": "English dialogue. 60 to 120 seconds, at most three scenes. Conflict in the first lines and a concrete open question at the end. Faces and phone screens carry information; no narration.",
+    "durationTarget": {"min": 60, "max": 120}
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "heading": "INT. APARTMENT HALLWAY - NIGHT",
+      "content": "MAYA hurries down a flickering hallway with a delivery bag.\nHer phone shows the order note: 'Knock four times. If nobody opens, do not call an ambulance. Just make sure he is breathing. A tip is waiting under the doormat. Paid by: Anna.'\nMaya lifts the doormat of 7C. There is no tip, only a small key.\nMAYA: Of course. Tipped in hardware.\nShe knocks four times. Nothing.\nShe tries the handle. The door was never locked."
+    },
+    {
+      "id": "s2",
+      "heading": "INT. LEO'S APARTMENT - CONTINUOUS",
+      "content": "In the dark living room, LEO sits upright in an armchair, a blanket over his knees.\nMAYA: Food delivery. Rice porridge.\nLEO: I ordered nothing. Out.\nMAYA: Anna paid. Anna also lied about the tip.\nLeo's jaw tightens at the name.\nLEO: Then tell Anna I'm dead.\nMAYA: Can't. The app fines me forty for a false report.\nMaya sets the porridge on a side table next to a shoebox of unsent letters and pill bottles.\nHer phone vibrates. A message from Anna: 'Is he alive? Did he find the red folder in the freezer?'\nMaya glances toward the dark kitchen. Inside the freezer, under frozen bags, sits a red folder with a dark stain on one corner.\nLeo sees where she is looking. He is up faster than he should be able to move, blocking the kitchen doorway.\nLEO: You delivered. Now forget what you saw.\nThe phone chimes. 'Tip added: $400.' A second message follows at once: 'Whatever you do, don't let him use the lighter.'\nMaya looks down. Leo's hand is closed around a lighter."
+    }
+  ],
+  "expected_findings": [
+    {
+      "id": "offscreen_knowledge",
+      "dimensions": ["continuity", "story"],
+      "scene": "s2",
+      "quote": "Whatever you do, don't let him use the lighter.",
+      "problem": "Anna is not there and nothing in the text lets her see the room, yet she warns about the lighter at the moment Leo grabs it. If she could see the room she would not ask whether he is alive; if she knew the plan beforehand, the order note would say so.",
+      "keywords": ["Anna", "lighter", "know"]
+    },
+    {
+      "id": "unsourced_folder",
+      "dimensions": ["continuity", "story"],
+      "scene": "s2",
+      "quote": "Did he find the red folder in the freezer?",
+      "problem": "Anna has not spoken to her father in five years, yet she knows where a folder is hidden in his freezer; the text gives no source.",
+      "keywords": ["folder", "freezer"]
+    },
+    {
+      "id": "ending_prop_late",
+      "dimensions": ["story"],
+      "scene": "s2",
+      "quote": "Leo's hand is closed around a lighter.",
+      "problem": "The ending relies on the lighter, which first appears in the last line.",
+      "keywords": ["lighter"]
+    },
+    {
+      "id": "relationship_unstated",
+      "dimensions": ["character", "story"],
+      "scene": "s2",
+      "quote": "LEO: Then tell Anna I'm dead.",
+      "problem": "The ending's stakes rely on Anna being Leo's daughter, which only the brief says; the episode never states or shows it.",
+      "keywords": ["daughter"]
+    },
+    {
+      "id": "note_contradiction",
+      "dimensions": ["story", "continuity"],
+      "scene": "s1",
+      "quote": "If nobody opens, do not call an ambulance. Just make sure he is breathing.",
+      "problem": "The note worries that he may not be breathing yet forbids an ambulance, and nobody gives or asks for the reason.",
+      "keywords": ["ambulance"]
+    },
+    {
+      "id": "dead_clues",
+      "dimensions": ["story"],
+      "scene": "s1",
+      "quote": "There is no tip, only a small key.",
+      "problem": "The key is never used because the door was never locked, and the four knocks, the letters, the pill bottles and the stain do not bear on the ending's question.",
+      "keywords": ["key"]
+    },
+    {
+      "id": "unseen_sight_line",
+      "dimensions": ["filmability", "continuity"],
+      "scene": "s2",
+      "quote": "Inside the freezer, under frozen bags, sits a red folder with a dark stain on one corner.",
+      "problem": "Maya glances toward the kitchen from the living room; she cannot see inside a closed freezer from there, although the rider knows only what she sees.",
+      "keywords": ["freezer", "see"]
+    },
+    {
+      "id": "screen_text_only",
+      "dimensions": ["filmability"],
+      "scene": "s1",
+      "quote": "Her phone shows the order note: 'Knock four times. If nobody opens, do not call an ambulance. Just make sure he is breathing. A tip is waiting under the doormat. Paid by: Anna.'",
+      "problem": "The hook rests on a long note that appears only as phone text; in a vertical frame it is hard to read in a few seconds, and nobody says or acts it out.",
+      "keywords": ["note", "screen"]
+    }
+  ]
+}
