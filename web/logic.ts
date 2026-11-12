@@ -21,8 +21,10 @@ export function logicView(o: {bundle: ProjectBundle; revision: Revision; episode
     : `<div class="inline-warning" role="status">${esc(gate.message)}</div>`;
   if (!check) return `<section class="logic-panel"><div class="bible-head"><h3>剧本逻辑检查</h3><div class="header-actions">${run}</div></div>${intro}${state}${!o.live ? '<p class="small muted">需要真实模型。</p>' : ''}</section>`;
   const rows = check.findings.map(f => findingView(check, f, disabled())).join('');
+  const openCount = check.findings.filter(f => !check.kept?.[f.id]).length;
+  const revise = openCount ? `<div class="language-toolbar"><button class="button primary" data-action="logic-revise" ${disabled(!o.live || o.dirty)}>按这 ${openCount} 条整体改稿</button><span class="small muted">一次看全剧本，把相关的问题合在一起改（不是一场一场地改），改完自动再检查一遍。结果另存为新版本，不会自动采用；你对比后再决定。</span></div>` : '';
   return `<section class="logic-panel"><div class="bible-head"><h3>剧本逻辑检查 <span class="small muted">${esc(new Date(check.createdAt).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}))}</span></h3><div class="header-actions">${run}</div></div>${intro}${state}`
-    + `${check.findings.length ? `<ol class="logic-findings">${rows}</ol>` : '<p>没有发现断开的地方。</p>'}`
+    + `${revise}${check.findings.length ? `<ol class="logic-findings">${rows}</ol>` : '<p>没有发现断开的地方。</p>'}`
     + '<p class="small muted">改稿后会生成新版本：在剧本页采用新版本，再回到这里重新检查。同一个问题如果还在，之前写的保留理由会沿用。</p></section>';
 }
 

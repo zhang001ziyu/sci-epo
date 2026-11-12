@@ -31,6 +31,7 @@ export const demoProvider:ModelProvider={mode:'demo',async complete(req:ModelReq
   if(!isShortDramaDemo(revision,en?'en':'zh'))throw new DemoError('预置短剧示例只适用于未改动的固定样例；自写或已修改剧本请使用真实模型。');
   if(req.kind==='storyboard')return JSON.stringify(shortDramaDemoShotList(en?'en':'zh'));
   if(req.kind==='logic')return JSON.stringify(shortDramaDemoLedger(en?'en':'zh'));
+  if(req.kind==='revise')throw new DemoError('示例演练不做整体改稿：固定样例的逻辑检查没有问题。');
   if(req.kind==='localize'){
    if(!['en','zh-CN'].includes(req.targetLanguage??''))throw new DemoError('预置短剧示例只提供英文和简体中文的逐行对齐版本。');
    return JSON.stringify(SHORT_DRAMA_DEMO[req.targetLanguage==='en'?'en':'zh']);

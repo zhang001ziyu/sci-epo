@@ -21,6 +21,7 @@ import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortD
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
 import { latestLogicCheck, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
+import { parseRevisePlan } from '../core/revisePrompt';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
 
@@ -402,6 +403,26 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
      // A reason the author gave for the same finding of this revision still holds.
      const kept=Object.fromEntries(Object.entries(previous?.kept??{}).filter(([fid])=>findings.some(f=>f.id===fid)));
      return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
+    });
+   }
+   if(action==='revise'){
+    // Coordinated revision of the whole script from the latest logic check's open findings; the result is a candidate.
+    const check=latestLogicCheck(store.all('logic_checks'),r.id)??fail(409,'先对这一版做剧本逻辑检查，再按检查结果改稿。');
+    const open=check.findings.filter(f=>!check.kept?.[f.id]);
+    if(!open.length)return fail(409,'这次检查没有待处理的问题，不需要整体改稿。');
+    const note=body.note===undefined||body.note===null||body.note===''?undefined:str(body.note,'改稿说明',2000);
+    return model(e,body,{kind:'revise',context:r.context,revision:r,episodeTitle:e.title,findings:open,...(note?{instruction:note}:{})},(raw,mode)=>{
+     let value:Record<string,unknown>;
+     try{value=JSON.parse(raw.trim().replace(/^```(?:json)?\s*/iu,'').replace(/\s*```$/u,''));}catch{throw new HttpError(502,'整体改稿的结果不是完整的 JSON，原稿保留。');}
+     let plan,output;
+     try{
+      plan=parseRevisePlan(value.plan,new Set(open.map(f=>f.id)),new Set(r.scenes.map(s=>s.id)));
+      output=parseScript(JSON.stringify({title:value.title,logline:value.logline,scenes:value.scenes}));
+     }catch(error){throw new HttpError(502,`整体改稿的结果未通过校验：${error instanceof Error?error.message:''}原稿保留。`);}
+     if(output.scenes.length!==r.scenes.length||output.scenes.some((s,i)=>s.id!==r.scenes[i]!.id))throw new HttpError(502,'整体改稿改动了场景的编号或顺序，原稿保留。');
+     const scenes=output.scenes.map((s,i)=>{const old=r.scenes[i]!;return old.locked?structuredClone(old):{...s,locked:false};});
+     const instruction=`按剧本逻辑检查整体改稿：${plan.map(p=>`${p.change}${p.scenes.length?`（${p.scenes.join('、')}）`:''}`).join('；')}`.slice(0,8000);
+     return saveRevision(e,{title:output.title,logline:output.logline,scenes,language:scriptLanguage(r),parentId:r.id,kind:'rewrite',context:r.context,instruction,mode});
     });
    }
    if(action==='localize'){

@@ -110,3 +110,38 @@ test('routes: shot lists wait for the logic check, findings are kept with a reas
   expect((await call('/api/logic-checks/c2/keep', {findingId: finding.id, reason: null})).status).toBe(200);
   expect((await call(`/api/revisions/${r.id}/shot-lists`, {mode: 'demo'})).status).toBe(409);
 });
+
+test('the whole-script revision fixes open findings together, keeps locked scenes and saves a candidate', async () => {
+  const store = new Store();
+  cleanups.push(() => store.close());
+  let answer = '';
+  const requests: any[] = [];
+  const live = {mode: 'live' as const, async complete(request: any) { requests.push(request); return answer; }};
+  const app = createApp(store, {demo: demoProvider, live}, process.cwd());
+  const call = async (path: string, body?: unknown) => {
+    const r = await app(new Request('http://127.0.0.1:4317' + path, {method: body === undefined ? 'GET' : 'POST', ...(body !== undefined ? {headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {})}));
+    return {status: r.status, body: await r.json() as any};
+  };
+  const p = (await call('/api/projects', {...brief, characters: 'MAYA, LEO'})).body as ProjectBundle, e = p.episodes[0]!;
+  const r0 = (await call(`/api/episodes/${e.id}/generate`, {mode: 'demo'})).body as Revision;
+  const r = (await call(`/api/revisions/${r0.id}/locks`, {sceneId: 's1', locked: true})).body as Revision;
+  expect((await call(`/api/revisions/${r.id}/revise`, {mode: 'live'})).status).toBe(409);
+  const finding = {id: 'no_choice', kind: 'no_choice' as const, ref: 's3:5', title: 'MAYA 没有选择', detail: 'd', fix: 'f'};
+  store.insert('logic_checks', {id: 'c1', revisionId: r.id, episodeId: e.id, mode: 'live', ledger, findings: [finding], createdAt: time});
+  const scenes = r.scenes.map(s => ({id: s.id, heading: s.heading, content: s.id === 's1' ? 'CHANGED' : `${s.content}\nMaya puts the phone away and chooses to stay.`}));
+  answer = JSON.stringify({plan: [{findings: ['no_choice', 'made-up'], change: '让玛雅在结尾做选择', scenes: ['s3']}], title: r.title, logline: r.logline, scenes: scenes.map((s, i) => i === 0 ? {...s, id: 'sX'} : s)});
+  expect((await call(`/api/revisions/${r.id}/revise`, {mode: 'live'})).body.error).toContain('编号或顺序');
+  answer = JSON.stringify({plan: [{findings: ['no_choice'], change: '让玛雅在结尾做选择', scenes: ['s3']}], title: r.title, logline: r.logline, scenes});
+  const saved = await call(`/api/revisions/${r.id}/revise`, {mode: 'live', note: '保留结尾的问题'});
+  expect(saved.status).toBe(200);
+  const next = saved.body as Revision;
+  expect(next.parentId).toBe(r.id);
+  expect(next.instruction).toContain('让玛雅在结尾做选择（s3）');
+  expect(next.scenes[0]).toEqual(r.scenes[0]!);
+  expect(next.scenes[2]!.content).toContain('chooses to stay');
+  // A candidate only: the accepted script does not change.
+  expect(store.get('episodes', e.id)!.acceptedRevisionId).toBeNull();
+  const request = requests.at(-1);
+  expect(request.findings.map((f: {id: string}) => f.id)).toEqual(['no_choice']);
+  expect(request.instruction).toBe('保留结尾的问题');
+});

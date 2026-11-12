@@ -1,7 +1,7 @@
 import type { ModelAttempt, Run } from '../src/types';
 
 const esc=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-const stages:Record<string,string>={generate:'生成剧本',review:'五维审稿',causality:'因果审稿',facts:'原文事实整理',verification:'陈述核实',rewrite:'局部改稿',localize:'语言改编',storyboard:'分镜表',bible:'本集设定',logic:'剧本逻辑检查'};
+const stages:Record<string,string>={generate:'生成剧本',review:'五维审稿',causality:'因果审稿',facts:'原文事实整理',verification:'陈述核实',rewrite:'局部改稿',localize:'语言改编',storyboard:'分镜表',bible:'本集设定',logic:'剧本逻辑检查',revise:'按检查整体改稿'};
 const statuses:Record<string,string>={running:'处理中',succeeded:'已返回',failed:'失败'};
 const stopped:Record<string,string>={call_limit:'该请求已达到重发上限',run_limit:'本次任务已达到重发总上限',review_stopped:'审稿已停止',not_eligible:'此错误不适用格式重发'};
 
