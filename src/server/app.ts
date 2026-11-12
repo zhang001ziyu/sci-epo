@@ -8,6 +8,12 @@ import { ProviderManager, ProviderAdminError } from './providerManager';
 import { alignLocalization, defaultPublication, exportLocalization, languageName, languageTag, notesLanguage, publicationSettings, scriptLanguage } from '../core/languages';
 import { currentAdaptation } from '../core/manuscripts';
 import { Production, type ProductionOptions } from './production';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { MediaStore } from './media';
+import { Stacks } from './stacks';
+import { Sessions } from './sessions';
+import { OWNER_KINDS, isMediaKind } from '../core/mediaKinds';
 import { reviewSuggestion } from '../core/reviewSuggestions';
 import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
@@ -29,9 +35,15 @@ function formatFields(b:Record<string,unknown>,stored?:Brief):Pick<Brief,'format
  try{return {format,durationTarget:raw===undefined||raw===null?{...DEFAULT_DURATION_TARGET}:parseDurationTarget(raw)};}catch(error){return fail(400,error instanceof Error?error.message:'目标时长无效。');}
 }
 function brief(value:unknown,stored?:Brief):Brief {const b=obj(value);const format=formatFields(b,stored);let lengthTarget;try {if(b.lengthTarget!==undefined&&b.lengthTarget!==null)lengthTarget=parseLengthTarget(b.lengthTarget);}catch(error){return fail(400,error instanceof Error?error.message:'篇幅范围无效。');}return {title:str(b.title,'系列标题',200),premise:str(b.premise,'故事前提'),characters:str(b.characters,'人物资料',30000,true),worldRules:str(b.worldRules,'世界规则',30000,true),authorRules:str(b.authorRules,'作者要求',30000,true),...(b.language!==undefined?{language:validLanguage(b.language)}:{}),...(b.glossary!==undefined?{glossary:str(b.glossary,'术语表',30000,true)}:{}),...(lengthTarget?{lengthTarget}:{}),...format};}
-export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:{publicOrigin?:string;production?:ProductionOptions}={}) {
+export interface AppOptions { publicOrigin?:string; production?:ProductionOptions; media?:{dir?:string;quotaMb?:number}; workerPublicUrl?:string }
+export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:AppOptions={}) {
  const auth=options.publicOrigin?new Auth(store.db,options.publicOrigin):undefined;
- const production=new Production(store,fail,id,options.production);
+ const clock=options.production?.clock??(()=>new Date());
+ // Without a configured folder (tests), media goes to a private temporary folder of this process.
+ const media=new MediaStore(store,options.media?.dir??join(tmpdir(),`sciepo-media-${process.pid}`),(options.media?.quotaMb??5120)*1024*1024,fail,id,()=>clock().toISOString());
+ const stacks=new Stacks(root);
+ const production=new Production(store,fail,id,{...options.production,media,stacks});
+ const sessions=new Sessions(store,media,stacks,production,fail,id,{clock,...(options.workerPublicUrl??auth?.origin?{publicUrl:options.workerPublicUrl??auth!.origin}:{})});
  function project(pid:string){return store.get('projects',pid)??fail(404,'找不到系列。');}
  function episode(eid:string){return store.get('episodes',eid)??fail(404,'找不到集数。');}
  function revision(rid:string){return store.get('revisions',rid)??fail(404,'找不到剧本版本。');}
@@ -203,9 +215,19 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    const versions=languages.map(language=>({language,sourceRevisionId:r.id,localizationId:language===scriptLanguage(r)?null:store.all('localizations').filter(l=>l.sourceRevisionId===r.id&&l.language===language).at(-1)?.id??null,available:language===scriptLanguage(r)||store.all('localizations').some(l=>l.sourceRevisionId===r.id&&l.language===language)}));
    return new Response(JSON.stringify({schemaVersion:1,project:p.title,episode:e.title,sourceRevisionId:r.id,sourceLanguage:scriptLanguage(r),sourceAccepted:e.acceptedRevisionId===r.id&&!e.needsReview,settings,versions,productionStatus:'planning_only',pending:['语言版本由作者复核','配音与画面制作','按最终配音和剪辑对齐字幕时间轴'],timedSubtitlesAvailable:false},null,2),{headers:{'content-type':'application/json','content-disposition':`attachment; filename="sci-epo-publication-${r.id}.json"`}});
   }
-  if(method==='GET'){const handled=production.get(a,target,action);if(handled!==undefined)return handled;}
+  if(method==='GET'&&a==='media'&&target&&!action){const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。');return media.serve(req,asset);}
+  if(method==='GET'){const handled=production.get(a,target,action)??sessions.get(a,target,action);if(handled!==undefined)return handled;}
+  // Owner uploads are raw bodies streamed into the media store, so they skip the JSON rules below.
+  if(method==='PUT'&&a==='projects'&&target&&action==='media'&&!parts[4]){
+   const p=project(target),kind=url.searchParams.get('kind');
+   if(!isMediaKind(kind)||!OWNER_KINDS.includes(kind))return fail(400,'只能上传参考图、声音样本或配乐。');
+   const declared=Number(req.headers.get('content-length')??Number.NaN),label=url.searchParams.get('label')?.trim(),license=url.searchParams.get('license')?.trim();
+   const asset=await media.ingest(p.id,kind,req.body,{origin:'owner',...(label?{label}:{}),...(license?{license}:{}),...(Number.isFinite(declared)?{declaredLength:declared}:{})});
+   return {asset,bundle:store.bundle(p.id)};
+  }
   if(!['POST','PUT'].includes(method))return fail(404,'未找到接口。');
   if(!req.headers.get('content-type')?.toLowerCase().startsWith('application/json'))return fail(415,'请使用 JSON 请求。');
+  if(Number(req.headers.get('content-length')??0)>1000000)return fail(413,'内容过长，请分集保存。');
   const bodyText=await req.text(); if(bodyText.length>250000)return fail(413,'内容过长，请分集保存。');
   let body:Record<string,unknown>;try{body=obj(JSON.parse(bodyText));}catch{return fail(400,'请求不是有效的 JSON。');}
   if(a==='providers'&&method==='POST'&&!action){
@@ -346,10 +368,29 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
     return saveRevision(e,{title:r.title,logline:r.logline,scenes:r.scenes.map(s=>s.id===sid?{...s,locked:body.locked as boolean}:s),language:scriptLanguage(r),parentId:r.id,kind:'manual',context:r.context,instruction:body.locked?'锁定场景':'解锁场景',mode:r.mode});
    }
   }
-  const handled=await production.post(method,a,target,action,body);if(handled!==undefined)return handled;
+  if(a==='media'&&target&&action==='delete'&&method==='POST'){
+   const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。'),reason=production.mediaInUse(asset);
+   if(reason)return fail(409,`不能删除：${reason}`);
+   media.delete(asset);return store.bundle(asset.projectId);
+  }
+  const handled=await production.post(method,a,target,action,body)??sessions.post(method,a,target,action,body,url.origin);if(handled!==undefined)return handled;
   return fail(404,'未找到接口。');
  }
- return async function fetch(req:Request):Promise<Response>{
+ const securityHeaders={'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'};
+ /** Session tokens go to the session API; worker tokens keep the v1 worker API. */
+ const workerRoute=(req:Request,url:URL)=>Sessions.handles(req)?sessions.worker(req,url):production.worker(req,url);
+ /** A listener that answers only the worker API, so a tunnel to it exposes nothing else of this Sci-epo. */
+ async function worker(req:Request):Promise<Response>{
+  const url=new URL(req.url);
+  try{
+   // Workers never send Origin; a browser page that tries to call this listener does.
+   if(!url.pathname.startsWith('/api/worker/v1/')||req.headers.get('origin'))return Response.json({error:'未找到接口。'},{status:404,headers:securityHeaders});
+   const response=await workerRoute(req,url);
+   for(const [k,v]of Object.entries(securityHeaders))response.headers.set(k,v);
+   return response;
+  }catch(error){const known=error instanceof HttpError;return Response.json({error:known?error.message:'请求失败。'},{status:known?error.status:500,headers:securityHeaders});}
+ }
+ const appFetch=async function fetch(req:Request):Promise<Response>{
   const url=new URL(req.url);
   const headers={'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
   try{
@@ -365,7 +406,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    }
    else if(auth&&url.pathname==='/api/auth/login'&&req.method==='POST')response=await auth.login(req,req.headers.get('x-real-ip')??'local');
    else if(auth&&url.pathname==='/api/auth/logout'&&req.method==='POST')response=auth.logout(req);
-   else if(workerPath)response=await production.worker(req,url);
+   else if(workerPath)response=await workerRoute(req,url);
    else if(url.pathname.startsWith('/api/')){auth?.require(req,write);const result=await api(req,url);response=result instanceof Response?result:Response.json(result);}
    else {
     const paths:Record<string,string>={'/':'web/index.html','/app.js':'dist/app.js','/style.css':'web/style.css'};
@@ -376,4 +417,5 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    return response;
   }catch(error){const known=error instanceof HttpError||error instanceof AuthError||error instanceof ProviderAdminError;return Response.json({error:known?error.message:'请求失败，已有内容已保留。'},{status:known?error.status:500,headers});}
  };
+ return Object.assign(appFetch,{worker});
 }

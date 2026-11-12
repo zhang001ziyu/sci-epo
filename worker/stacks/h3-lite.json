@@ -1,0 +1,29 @@
+{
+  "id": "h3-lite",
+  "version": "2026.11.1",
+  "label": "MiniMax H3 LITE: int8 video models, NVFP4 text encoder",
+  "comfyui": {"repo": "https://github.com/Comfy-Org/ComfyUI.git", "commit": "fca60fe70e5b84c5c6b058263653d15cb3401e44"},
+  "files": {
+    "common": [
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "gb": 15.69},
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "vae/minimax_h3_video_vae_int8_convrot.safetensors"},
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "vae/minimax_h3_audio_vae_fp32.safetensors"}
+    ],
+    "r2v": [
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors", "gb": 20.97},
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"}
+    ],
+    "t2va": [
+      {"repo": "Comfy-Org/MiniMax-H3", "path": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"},
+      {"repo": "lightx2v/Minimax-h3-Turbo", "path": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", "target": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"}
+    ]
+  },
+  "workflows": {"r2v": "h3-lite-r2v.workflow.json"},
+  "requiredNodes": {
+    "r2v": ["UNETLoader", "LoraLoaderModelOnly", "CLIPLoader", "VAELoader", "MiniMaxH3ReferenceToVideo", "LoadImage", "LoadAudio", "RandomNoise", "KSamplerSelect", "BasicScheduler", "BasicGuider", "SamplerCustomAdvanced", "VAEDecode", "VAEDecodeAudio", "CreateVideo", "SaveVideo"]
+  },
+  "turboSteps": {"r2v": 4, "t2va": 8},
+  "testedGpus": [{"name": "RTX PRO 6000 Blackwell", "minVramGb": 90, "colabRuntime": "G4", "modes": ["r2v"]}],
+  "setupMinutes": 4,
+  "defaultSecondsPerFrame": {"480x864x20": 0.62}
+}

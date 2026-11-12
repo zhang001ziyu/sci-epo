@@ -7,10 +7,12 @@ export interface DurationTarget { min: number; max: number }
 export interface Brief { title: string; premise: string; characters: string; worldRules: string; authorRules: string; language?: string; glossary?: string; lengthTarget?: LengthTarget; format?: Format; durationTarget?: DurationTarget }
 export interface PublicationSettings { audioLanguage: string; subtitleLanguages: string[]; subtitleStyle: 'selectable'|'burned-bilingual'|'none'; platform: 'youtube'|'bilibili'|'general' }
 /** How a series looks and sounds on screen. English free text, because H3 expects English prompt bodies. */
-export interface ProductionCharacter { name: string; appearance: string; voice: string; image?: string; voiceSample?: string }
+export interface ProductionCharacter { name: string; appearance: string; voice: string; image?: string; voiceSample?: string; usePortrait?: boolean; portrait?: AssetRef & {approvedAt: string}; voiceSampleAsset?: AssetRef }
 export interface ProductionProfile { style: string; music: string; characters: ProductionCharacter[] }
 /** voiceLanguages and production are settings outside the frozen brief: changing them never requires a story recheck. */
-export interface Project extends Brief { id: string; createdAt: string; updatedAt: string; publication?: PublicationSettings; voiceLanguages?: string[]; production?: ProductionProfile }
+export interface Project extends Brief { id: string; createdAt: string; updatedAt: string; publication?: PublicationSettings; voiceLanguages?: string[]; production?: ProductionProfile; productionSettings?: ProductionSettings }
+/** Production settings outside the frozen brief. The compute-unit rate is the one Colab shows for the chosen runtime. */
+export interface ProductionSettings { computeUnitsPerHour?: number }
 export interface Episode { id: string; projectId: string; ordinal: number; title: string; acceptedRevisionId: string | null; needsReview: boolean; createdAt: string; contextToken?: string; productionShotListId?: string }
 export interface Scene { id: string; heading: string; content: string; locked: boolean }
 export interface ContextSnapshot { brief: Brief; previousEpisodes: { episodeId: string; ordinal: number; revisionId: string; title: string; scenes: Scene[] }[]; hash: string }
@@ -38,14 +40,48 @@ export interface ShotListContent { cast: CastMember[]; shots: Shot[] }
 export interface ShotList extends ShotListContent { id: string; episodeId: string; sourceRevisionId: string; parentId: string | null; aspectRatio: '9:16' | '16:9'; voiceLanguages: string[]; adaptations: Record<string, string>; mode: ProviderMode; createdAt: string }
 /** One H3 prompt of one clip in one voice language, with reference files in the order the worker passes them. */
 export interface RenderPrompt { mode: 't2va' | 'r2v'; text: string; images: string[]; audio: string[] }
-export interface RenderClip { id: string; sceneId: string; shotIds: string[]; plannedSeconds: number; frames: number; seed: number; warnings: string[]; prompts: Record<string, RenderPrompt> }
-/** An immutable render plan made from one production shot list. Video files stay with the worker. */
-export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string }
+export interface RenderClip { id: string; sceneId: string; shotIds: string[]; plannedSeconds: number; frames: number; seed: number; warnings: string[]; prompts: Record<string, RenderPrompt>; pictureKey?: string }
+/** An immutable render plan made from one production shot list.
+ * Version 1 batches hand file names to workers; version 2 batches render through sessions into the media store. */
+export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string; version?: 2; preset?: RenderPreset; musicMode?: 'bed' | 'native'; references?: BatchReference[] }
+/** A file in Sci-epo's media store, named by its SHA-256. */
+export type MediaKind = 'reference_image' | 'voice_sample' | 'music' | 'take_video' | 'qa_image' | 'qa_data' | 'cut_video' | 'report';
+export interface MediaAsset { id: string; projectId: string; kind: MediaKind; contentType: string; bytes: number; sha256: string; origin: 'owner' | 'worker' | 'sciepo'; sessionId?: string; label?: string; license?: string; createdAt: string }
+export interface AssetRef { assetId: string; sha256: string }
+/** A pinned worker stack (ComfyUI commit, model files, workflows), named by worker/stacks/<id>.json. */
+export interface StackRef { id: string; version: string }
+export interface RenderPreset { width: number; height: number; steps: number; turbo: boolean; stack: StackRef }
+export interface BatchReference extends AssetRef { name: string; kind: 'image' | 'audio'; character: string }
+export type RetakeReason = 'picture_broken' | 'character_drift' | 'line_wrong' | 'lip_sync' | 'garbled_text' | 'other';
+export interface QaCheck { id: string; status: 'pass' | 'warning' | 'failure'; message: string; value?: number }
+export interface SpeechLine { sceneId: string; position: number; language: string; expected: string; heard: string; score: number }
+export interface TakeQa { checks: QaCheck[]; loudness?: {integrated: number; truePeak: number; range?: number}; contactSheet?: string; keyframes: {shotId: string; assetId: string}[]; dataAssetId?: string; speech?: {language?: string; lines: SpeechLine[]} }
+/** One render of a v2 job with one seed. */
+export interface Take { n: number; seed: number; status: 'queued' | 'claimed' | 'rendered' | 'failed'; sessionId?: string; leaseExpiresAt?: string; startedAt?: string; finishedAt?: string; renderSeconds?: number; video?: AssetRef & {bytes: number; seconds: number}; qa?: TakeQa; verdict?: {decision: 'approved' | 'retake'; reasons: RetakeReason[]; note?: string; at: string}; rehearsal?: boolean; error?: string }
+/** One render target of a v2 batch. Jobs with the same key are one job, so a clip without dialogue serves every language. */
+export interface RenderJobV2 { id: string; batchId: string; clipId: string; key: string; languages: string[]; order: number; outputName: string; takes: Take[]; approvedTake?: number; updatedAt: string }
+export type SessionEnd = 'queue_empty' | 'budget' | 'stopped' | 'not_current' | 'failures' | 'error' | 'lost' | 'expired';
+export interface SessionEvent { at: string; stage: string; message?: string; data?: Record<string, string | number | boolean> }
+export interface SessionEstimate { setupMinutes: number; renderMinutes: number; takes: number; frames: number; measured: boolean }
+/** One worker's work on one or more v2 batches, with a token that works only for them. */
+export interface RenderSession {
+  id: string; projectId: string; batchIds: string[]; mode: 'pull' | 'rehearsal'; tokenHash: string | null;
+  status: 'waiting' | 'connected' | 'setting_up' | 'rendering' | 'finishing' | 'ended' | 'lost' | 'expired';
+  settings: {budgetMinutes: number; allowUntestedGpu: boolean; waitForRetakesMinutes: number};
+  estimate: SessionEstimate; createdAt: string; expiresAt: string; lastSeenAt?: string; startedAt?: string; lastResultAt?: string; endedAt?: string; end?: SessionEnd;
+  worker?: {gpu?: string; vramGb?: number; workerSha256?: string; comfyCommit?: string};
+  events: SessionEvent[]; stopRequest?: {when: 'after_take' | 'now'; at: string};
+  summary?: {minutes: number; computeUnits?: number; takesRendered: number; takesFailed: number; undelivered: number; message?: string};
+  readings?: {before?: number; after?: number};
+}
+export type PublicRenderSession = Omit<RenderSession, 'tokenHash'>;
+/** Measured seconds per frame for one stack, size, step count, turbo switch and GPU. */
+export interface RenderRate { id: string; samples: number[]; updatedAt: string }
 export interface RenderOutput { file: string; seconds?: number; bytes?: number; sha256?: string }
 export interface RenderJob { id: string; batchId: string; clipId: string; language: string; order: number; status: 'queued' | 'claimed' | 'succeeded' | 'failed'; attempts: number; workerTokenId?: string; workerLabel?: string; leaseExpiresAt?: string; output?: RenderOutput; error?: string; updatedAt: string }
 /** Only the SHA-256 of a worker token is stored. */
 export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
-export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[] }
+export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
 export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard'; context: ContextSnapshot; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

@@ -37,7 +37,7 @@ function harness(options: {transport?: typeof fetch} = {}) {
     const s = await setup();
     expect((await call(`/api/projects/${s.p.project.id}/production`, profile, {method: 'PUT'})).status).toBe(200);
     await adopt(s.r, s.list);
-    const created = await call(`/api/shot-lists/${s.list.id}/render-batches`, {});
+    const created = await call(`/api/shot-lists/${s.list.id}/render-batches`, {version: 1});
     expect(created.status).toBe(200);
     const bundle = created.body as ProjectBundle;
     return {...s, bundle, batch: bundle.renderBatches!.at(-1)!, jobs: bundle.renderJobs!};
@@ -63,7 +63,7 @@ describe('production profile and batches', () => {
     const h = harness(), {r, list} = await h.setup();
     expect((await h.call(`/api/shot-lists/${list.id}/render-batches`, {})).status).toBe(409);
     await h.adopt(r, list);
-    const created = await h.call(`/api/shot-lists/${list.id}/render-batches`, {clipLimitSeconds: 15});
+    const created = await h.call(`/api/shot-lists/${list.id}/render-batches`, {version: 1, clipLimitSeconds: 15});
     expect(created.status).toBe(200);
     const bundle = created.body as ProjectBundle;
     expect(bundle.renderBatches!.length).toBe(1);

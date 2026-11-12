@@ -25,7 +25,20 @@ if(!managed.catalog().connections.length){
 }
 const publicOrigin=process.env.SCIEPO_PUBLIC_ORIGIN;
 if(process.env.NODE_ENV==='production'&&!publicOrigin)throw new Error('公开部署必须启用账号保护。');
-const server=Bun.serve({hostname:'127.0.0.1',port,idleTimeout:0,maxRequestBodySize:300000,fetch:createApp(store,{demo:demoProvider,managed},root,{publicOrigin})});
+const mediaDir=process.env.SCIEPO_MEDIA_DIR??resolve(dirname(dbPath),'media');
+mkdirSync(mediaDir,{recursive:true,mode:0o700});
+const quotaMb=Number(process.env.SCIEPO_MEDIA_QUOTA_MB??5120);
+if(!Number.isFinite(quotaMb)||quotaMb<=0)throw new Error('SCIEPO_MEDIA_QUOTA_MB 需为正数。');
+const workerPublicUrl=process.env.SCIEPO_WORKER_PUBLIC_URL;
+if(workerPublicUrl&&!/^https:\/\/[^\s/?#]+\/?$/u.test(workerPublicUrl))throw new Error('SCIEPO_WORKER_PUBLIC_URL 需为 https 地址，例如隧道地址。');
+const app=createApp(store,{demo:demoProvider,managed},root,{publicOrigin,media:{dir:mediaDir,quotaMb},...(workerPublicUrl?{workerPublicUrl}:{})});
+// JSON routes check their own limit; the larger cap is for media uploads, which are checked per kind while streaming.
+const server=Bun.serve({hostname:'127.0.0.1',port,idleTimeout:0,maxRequestBodySize:300*1024*1024,fetch:app});
 console.log(`Sci-epo: ${server.url} · ${managed.ready()?'创作模型配置已加载':'未配置真实模型；示例演练可用'}`);
-process.on('SIGINT',()=>{server.stop(true);store.close();process.exit(0);});
-process.on('SIGTERM',()=>{server.stop(true);store.close();process.exit(0);});
+// Optional second listener with only the worker API, for a tunnel from Colab to a Sci-epo on this computer.
+const workerPort=process.env.SCIEPO_WORKER_PORT?Number(process.env.SCIEPO_WORKER_PORT):undefined;
+const workerServer=workerPort?Bun.serve({hostname:'127.0.0.1',port:workerPort,idleTimeout:0,maxRequestBodySize:80*1024*1024,fetch:app.worker}):undefined;
+if(workerServer)console.log(`Sci-epo worker API only: ${workerServer.url}${workerPublicUrl?` · sessions use ${workerPublicUrl}`:' · set SCIEPO_WORKER_PUBLIC_URL to the tunnel address'}`);
+const stop=()=>{server.stop(true);workerServer?.stop(true);store.close();process.exit(0);};
+process.on('SIGINT',stop);
+process.on('SIGTERM',stop);

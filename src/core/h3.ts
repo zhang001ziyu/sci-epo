@@ -72,7 +72,7 @@ export function parseProductionProfile(value: unknown): ProductionProfile {
     const image = text(c.image, `${name} 的参考图`, 124), voiceSample = text(c.voiceSample, `${name} 的声音样本`, 124);
     if (image && !IMAGE_FILE.test(image)) reject(`${name} 的参考图只能写文件名（英文字母、数字、点、横线、下划线），扩展名为 png、jpg、jpeg 或 webp。`);
     if (voiceSample && !AUDIO_FILE.test(voiceSample)) reject(`${name} 的声音样本只能写文件名（英文字母、数字、点、横线、下划线），扩展名为 wav、mp3 或 flac。`);
-    return {name, appearance: text(c.appearance, `${name} 的外貌`, 600), voice: text(c.voice, `${name} 的声音`, 300), ...(image ? {image} : {}), ...(voiceSample ? {voiceSample} : {})};
+    return {name, appearance: text(c.appearance, `${name} 的外貌`, 600), voice: text(c.voice, `${name} 的声音`, 300), ...(image ? {image} : {}), ...(voiceSample ? {voiceSample} : {}), ...(typeof c.usePortrait === 'boolean' ? {usePortrait: c.usePortrait} : {})};
   });
   return {style: text(row.style, '画面风格', 300), music: text(row.music, '背景音乐', 300), characters};
 }
@@ -158,6 +158,10 @@ export interface RenderPlanInput {
   batchId: string; createdAt: string; episodeId: string;
   list: ShotList; revision: Revision; adaptations: Record<string, Pick<Localization, 'id' | 'scenes'>>;
   profile: ProductionProfile; languages?: string[]; clipLimitSeconds?: number;
+  /** Render size; H3's native size for the aspect ratio when absent. */
+  size?: {width: number; height: number};
+  /** `bed`: clips get no non-diegetic music, because the cut lays one track under the episode. */
+  musicMode?: 'bed' | 'native';
 }
 export interface PlannedJob { clipId: string; language: string; order: number }
 
@@ -202,7 +206,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     if (list.shots.some(s => s.spoken.some(x => x.castId === id)) && !character?.voice && !character?.voiceSample) warnings.push(`角色 ${nameOf(id)} 没有声音描述，不同片段里的声音可能不一样。`);
   }
 
-  const {width, height} = h3Size(list.aspectRatio), orientation = list.aspectRatio === '9:16' ? 'vertical 9:16' : 'horizontal 16:9';
+  const {width, height} = input.size ?? h3Size(list.aspectRatio), orientation = list.aspectRatio === '9:16' ? 'vertical 9:16' : 'horizontal 16:9';
   const clips: RenderClip[] = planClips(list.shots, input.clipLimitSeconds ?? DEFAULT_CLIP_LIMIT).map(planned => {
     const clipWarnings = [...planned.warnings], seconds = framesToSeconds(planned.frames);
     const starts: number[] = []; planned.shots.reduce((t, shot) => { starts.push(t); return t + shot.durationSeconds; }, 0);
@@ -256,7 +260,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
         return parts.join(' ');
       });
       const sounds = [...new Set(planned.shots.map(s => s.sound?.trim()).filter((s): s is string => !!s))].map(sentence).join(' ') || 'The natural ambient sound of the location continues throughout.';
-      const music = profile.music || 'N/A';
+      const music = input.musicMode === 'bed' ? 'N/A' : profile.music || 'N/A';
       let text: string;
       if (mode === 't2va') {
         text = `integrated_multimodal_description: ${shotParagraphs.join(' ')}\n\noverall_soundscape: ${sounds}\n\nnon_diegetic_music: ${music}`;
