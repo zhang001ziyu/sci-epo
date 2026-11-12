@@ -437,7 +437,10 @@ class SessionFlowTests(SessionTestCase):
         self.assertGreaterEqual(len(fake.heartbeats), 0)
         if HAS_FFMPEG:
             checks = {c['id']: c['status'] for c in fake.results[('job-0001-aaaa', 1)]['qa']['checks']}
-            self.assertEqual(checks, {'duration': 'pass', 'size': 'pass', 'frame_rate': 'pass', 'audio': 'pass', 'loudness': 'pass', 'silence': 'pass'})
+            # This machine has no speech recognition, so the take with lines says they were not checked.
+            self.assertEqual(checks, {'duration': 'pass', 'size': 'pass', 'frame_rate': 'pass', 'audio': 'pass', 'loudness': 'pass', 'silence': 'pass', 'speech': 'warning'})
+            message = next(c['message'] for c in fake.results[('job-0001-aaaa', 1)]['qa']['checks'] if c['id'] == 'speech')
+            self.assertIn('not checked', message)
 
     def test_a_reference_with_the_wrong_hash_ends_the_session_with_an_error(self):
         comfy = self.serve(SessionComfy())

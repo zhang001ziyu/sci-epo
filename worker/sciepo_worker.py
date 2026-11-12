@@ -1350,7 +1350,19 @@ def line_status(score: float) -> str:
     return 'pass' if score >= 0.6 else 'warning' if score >= 0.2 else 'failure'
 
 
-_speech = {'checked': False, 'ready': False, 'warned': False}
+_speech: dict[str, Any] = {'checked': False, 'ready': False, 'warned': False, 'problem': ''}
+
+
+def nvidia_library_path() -> str:
+    """LD_LIBRARY_PATH with the CUDA libraries that pip packages bring (nvidia-cudnn-cu12, nvidia-cublas-cu12, ...).
+    CTranslate2, which faster-whisper uses, loads cuDNN and cuBLAS by name and does not look in site-packages."""
+    folders: list[str] = []
+    for root in {Path(p) for p in sys.path if p and Path(p).name in ('site-packages', 'dist-packages')}:
+        nvidia = root / 'nvidia'
+        if nvidia.is_dir():
+            folders += sorted(str(lib) for lib in nvidia.glob('*/lib') if lib.is_dir())
+    current = os.environ.get('LD_LIBRARY_PATH', '')
+    return os.pathsep.join([*folders, *([current] if current else [])])
 
 
 def cuda_available() -> bool:
@@ -1368,9 +1380,12 @@ def speech_available() -> bool:
         try:
             run_command([sys.executable, '-m', 'pip', 'install', '-q', 'faster-whisper'], timeout=900)
         except WorkerError as error:
+            _speech['problem'] = f'faster-whisper could not be installed: {error}'
             log(f'speech is not checked: {error}')
         importlib.invalidate_caches()
         ready = all(importlib.util.find_spec(name) for name in ('faster_whisper', 'numpy'))
+    if not ready and not _speech['problem']:
+        _speech['problem'] = 'faster-whisper is not installed, and this machine has no NVIDIA GPU to run it on'
     _speech['ready'] = ready
     return ready
 
@@ -1382,7 +1397,8 @@ def transcribe(path: Path, language: str = '') -> dict | None:
         return None
     try:
         done = subprocess.run([sys.executable, str(Path(__file__).resolve()), 'speech', '--input', str(path), '--language', language],
-                              capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=1200)
+                              capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=1200,
+                              env=dict(os.environ, LD_LIBRARY_PATH=nvidia_library_path()))
     except (OSError, subprocess.SubprocessError) as error:
         done, problem = None, str(error)
     if done is not None:
@@ -1395,6 +1411,7 @@ def transcribe(path: Path, language: str = '') -> dict | None:
                 if isinstance(result, dict) and isinstance(result.get('segments'), list):
                     return result
         problem = ' | '.join((done.stderr or done.stdout or '').strip().splitlines()[-2:]) or f'exit code {done.returncode}'
+    _speech['problem'] = f'speech recognition failed: {scrub(problem)[:300]}'
     if not _speech['warned']:
         _speech['warned'] = True
         log(f'speech recognition failed, so speech is not checked: {problem[:300]}')
@@ -1516,7 +1533,8 @@ def qa_take(path: Path, take: dict, extra: dict | None = None) -> tuple[dict, di
     data['keyframes'] = [{'shotId': k['shotId'], 'time': k['time'], 'file': k['path'].name} for k in keyframes]
     speech = None
     expected = [line for line in take.get('expectedLines') or [] if isinstance(line, dict) and str(line.get('text', '')).strip()]
-    if expected and audio is not None:
+    # A rehearsal take speaks a test tone, so its lines are not listened for.
+    if expected and audio is not None and not take.get('rehearsal'):
         languages = {str(line.get('language', '')) for line in expected}
         heard = transcribe(path, languages.pop() if len(languages) == 1 else '')
         if heard:
@@ -1527,6 +1545,9 @@ def qa_take(path: Path, take: dict, extra: dict | None = None) -> tuple[dict, di
                 check('line', line_status(line['score']), f"scene {line['sceneId']}, line {line['position']}: {said}", line['score'])
             speech = {'language': str(heard.get('language') or ''), 'lines': lines}
             data['speech'] = {**speech, 'segments': [{'start': s.get('start'), 'end': s.get('end'), 'text': scrub(s.get('text', ''))} for s in segments]}
+        else:
+            # The take has lines to check but no speech recognition ran: say why, so the author does not read silence as a pass.
+            check('speech', 'warning', f"the spoken lines were not checked: {_speech['problem'] or 'speech recognition is not available'}")
     data['checks'] = checks
     qa_path = path.with_name(f'{path.stem}-qa.json')
     text = json.dumps(data, ensure_ascii=False, indent=1)
