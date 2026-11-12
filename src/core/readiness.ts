@@ -1,0 +1,87 @@
+/** The readiness checklist of an episode before a render batch: what has passed, what warns and what fails, with the
+ * tab where the author fixes it. A batch needs every item to pass, or the author's confirmation of the rest.
+ * Browser-safe, so the production tab shows the same items the server checks. */
+import type { Episode, Localization, ProductionProfile, ReadinessItem, Review, Revision, ShotList } from '../types';
+import { languageName, scriptLanguage } from './languages';
+import { normalizeSpeakerName } from './scriptLines';
+import { boundAdaptations, newestAlignedAdaptations, shotListStatus, shotListWarnings } from './shotList';
+
+const DIMENSION_LABELS: Record<string, string> = {story: '故事与因果', character: '人物与选择', dialogue: '对白与表达', continuity: '设定与连续性', filmability: '场面与可表演性'};
+const clip = (text: string, max = 140) => { const t = text.replace(/\s+/gu, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
+
+export interface ReadinessInput {
+  episode: Pick<Episode, 'acceptedRevisionId' | 'needsReview' | 'productionShotListId'>;
+  /** The accepted revision, when there is one. */
+  revision?: Revision;
+  /** The production shot list, when there is one. */
+  list?: ShotList;
+  reviews: Review[];
+  localizations: Localization[];
+  profile?: ProductionProfile;
+  /** Voice languages of the batch; every voice language of the shot list with text when absent. */
+  languages?: string[];
+}
+
+/** Open issues of a review: assessments that report an issue, and causal checks and pressures with a gap. */
+export function openIssues(review: Review): {id: string; message: string}[] {
+  const issues: {id: string; message: string}[] = [];
+  for (const a of review.assessments) if (a.status === 'issue') issues.push({id: `issue:assessment:${a.dimension}`, message: `审稿（${DIMENSION_LABELS[a.dimension] ?? a.dimension}）：${clip(a.explanation)}`});
+  (review.causality?.checks ?? []).forEach((c, i) => { if (c.verdict === 'gap') issues.push({id: `issue:causal:${c.sceneId}:${i}`, message: `因果（${c.sceneId}）：${clip(c.explanation)}`}); });
+  (review.causality?.pressures ?? []).forEach((c, i) => { if (c.verdict === 'gap') issues.push({id: `issue:pressure:${c.sceneId}:${i}`, message: `压力（${c.sceneId}）：${clip(c.explanation)}`}); });
+  return issues;
+}
+
+export function readinessItems(input: ReadinessInput): ReadinessItem[] {
+  const {episode, revision, list} = input, items: ReadinessItem[] = [];
+  const accepted = !!revision && episode.acceptedRevisionId === revision.id && !episode.needsReview;
+  items.push(accepted
+    ? {id: 'accepted', status: 'passed', message: '本集已采用定稿，前面没有需要复核的改动。', link: {tab: 'script'}}
+    : {id: 'accepted', status: 'failed', message: episode.needsReview ? '本集因上游修改需要复核，请重新审读并采用定稿。' : '本集还没有采用定稿。', link: {tab: 'script'}});
+  if (!revision) return items;
+
+  // The newest review of the accepted revision; a newer accepted revision needs its own.
+  const review = input.reviews.filter(r => r.revisionId === revision.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  if (!review) items.push({id: 'review', status: 'failed', message: '这一版定稿还没有审稿。开 GPU 之前，请先跑一次审稿，看看逻辑和因果有没有断开。', link: {tab: 'review'}});
+  else if (review.mode !== 'live') items.push({id: 'review', status: 'failed', message: '这一版只有示例演练的审稿，没有真实模型审稿。', link: {tab: 'review'}});
+  else if (review.errors.length || review.status !== 'completed') items.push({id: 'review', status: 'failed', message: '这一版的审稿没有完整完成或没有通过核实，请重新审稿或核实。', link: {tab: 'review'}});
+  else items.push({id: 'review', status: 'passed', message: '这一版定稿有完整的真实模型审稿。', link: {tab: 'review'}});
+  if (review) for (const issue of openIssues(review)) items.push({id: issue.id, status: 'warning', message: issue.message, link: {tab: 'review'}});
+
+  if (!list) { items.push({id: 'shot_list', status: 'failed', message: '还没有采用制作用分镜表。', link: {tab: 'shots'}}); return items; }
+  const current = shotListStatus(list, episode).current;
+  items.push(current
+    ? {id: 'shot_list', status: 'passed', message: '制作用分镜表基于本集当前定稿。', link: {tab: 'shots'}}
+    : {id: 'shot_list', status: 'failed', message: '制作用分镜表不是基于本集当前定稿的版本，请在分镜页采用新的分镜表。', link: {tab: 'shots'}});
+
+  const source = scriptLanguage(revision), bound = boundAdaptations(list, input.localizations);
+  const languages = input.languages ?? list.voiceLanguages.filter(l => l === source || bound[l]);
+  for (const language of input.languages ?? list.voiceLanguages) {
+    if (language === source) continue;
+    items.push(bound[language]
+      ? {id: `adaptation:${language}`, status: languages.includes(language) ? 'passed' : 'warning', message: languages.includes(language) ? `${languageName(language)}逐行对齐稿已绑定到分镜表。` : `${languageName(language)}这次不渲染。`, link: {tab: 'languages'}}
+      : {id: `adaptation:${language}`, status: 'failed', message: `${languageName(language)}还没有绑定到分镜表的逐行对齐稿。`, link: {tab: 'languages'}});
+  }
+
+  const newest = Object.fromEntries(Object.entries(newestAlignedAdaptations(revision, input.localizations, list.voiceLanguages)).map(([language, l]) => [language, l.id]));
+  shotListWarnings(list, {revision, adaptations: bound, newest}).forEach((w, i) => {
+    items.push({id: `shot_warning:${w.kind}:${w.shotId ?? w.language ?? i}`, status: 'warning', message: `分镜：${w.message}`, link: {tab: 'shots', ...(w.shotId ? {target: w.shotId} : {})}});
+  });
+
+  const characterOf = (name: string) => input.profile?.characters.find(c => normalizeSpeakerName(c.name) === normalizeSpeakerName(name));
+  const inFrame = new Set(list.shots.flatMap(s => s.characters)), speakers = new Set(list.shots.flatMap(s => s.spoken.map(x => x.castId)));
+  for (const member of list.cast) {
+    const c = characterOf(member.name);
+    if (inFrame.has(member.id)) {
+      if (!c?.appearance) items.push({id: `appearance:${member.name}`, status: 'warning', message: `${member.name} 没有外貌描述，不同片段里可能长得不一样。`, link: {tab: 'production'}});
+      if (c?.portrait && c.usePortrait !== false) items.push({id: `portrait:${member.name}`, status: 'passed', message: `${member.name} 有选定的参考图。`, link: {tab: 'production'}});
+      else if (c?.usePortrait === false) items.push({id: `portrait:${member.name}`, status: 'warning', message: `${member.name} 选择不用参考图：不同片段里可能长得不一样，只有这个角色入镜的片段要用文生模式。`, link: {tab: 'production'}});
+      else items.push({id: `portrait:${member.name}`, status: 'failed', message: `${member.name} 还没有选定参考图。请上传一张和外貌描述一致的参考图（例如描述里没有兜帽，图里就不要戴兜帽）。`, link: {tab: 'production'}});
+    }
+    if (speakers.has(member.id) && !c?.voice && !c?.voiceSampleAsset) items.push({id: `voice:${member.name}`, status: 'warning', message: `${member.name} 没有声音描述，不同片段里的声音可能不一样。`, link: {tab: 'production'}});
+  }
+  return items;
+}
+
+/** Items that need the author's confirmation: everything that did not pass. */
+export const unconfirmedItems = (items: ReadinessItem[], confirmed: readonly string[]): ReadinessItem[] =>
+  items.filter(item => item.status !== 'passed' && !confirmed.includes(item.id));

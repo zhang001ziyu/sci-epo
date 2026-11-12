@@ -456,9 +456,21 @@ describe('cast, uploads and the batch form', () => {
     expect(html).toContain('<option value="bed" selected>整集配乐（bed）</option>');
     expect(html).toContain('剪辑时铺一条连续的配乐');
     expect(html).toContain('id="prod-steps" class="small-input" type="number" min="1" max="60" step="1" value="20"');
+    // No live review yet: the checklist blocks the batch until the author confirms its open items.
+    expect(html).toContain('<h3>开拍清单</h3>');
+    expect(html).toContain('这一版定稿还没有审稿');
+    expect(html).toContain('data-action="tab" data-id="review">去审稿 →</button>');
+    expect(html).toContain('data-action="production-create-batch" data-id="v1" disabled>');
+    p.click('production-create-batch', {dataset: {id: 'v1'}}, ctx);
+    expect(calls.failures.at(-1)).toContain('开拍清单还有');
+    expect(calls.posts).toHaveLength(0);
+    p.change(field({productionReadinessConfirm: ''}, 'on', true), ctx);
+    expect(p.view(ctx)).toContain('data-production-readiness-confirm checked');
     p.click('production-create-batch', {dataset: {id: 'v1'}}, ctx);
     await flush();
-    expect(calls.posts.at(-1)).toEqual(['/api/shot-lists/v1/render-batches', {size: '480x864', steps: 20, turbo: false, musicMode: 'bed', clipLimitSeconds: 15}]);
+    expect(calls.posts.at(-1)![0]).toBe('/api/shot-lists/v1/render-batches');
+    expect(calls.posts.at(-1)![1]).toEqual({size: '480x864', steps: 20, turbo: false, musicMode: 'bed', clipLimitSeconds: 15, confirmedReadiness: expect.arrayContaining(['review', 'portrait:LEO'])});
+    expect((calls.posts.at(-1)![1] as {confirmedReadiness: string[]}).confirmedReadiness).not.toContain('portrait:MAYA');
     p.input(field({productionBatch: 'size'}, '768x1344'));
     p.input(field({productionBatch: 'musicMode'}, 'native'));
     p.input(field({productionBatch: 'steps'}, '24'));
@@ -466,9 +478,13 @@ describe('cast, uploads and the batch form', () => {
     p.change(field({productionLanguage: 'zh-CN'}, 'on', false), ctx);
     html = p.view(ctx);
     expect(html).toContain('<option value="768x1344" selected>');
+    // A new batch and a changed checklist need a new confirmation.
+    p.click('production-create-batch', {dataset: {id: 'v1'}}, ctx);
+    expect(calls.failures.at(-1)).toContain('开拍清单还有');
+    p.change(field({productionReadinessConfirm: ''}, 'on', true), ctx);
     p.click('production-create-batch', {dataset: {id: 'v1'}}, ctx);
     await flush();
-    expect(calls.posts.at(-1)).toEqual(['/api/shot-lists/v1/render-batches', {size: '768x1344', steps: 24, turbo: true, musicMode: 'native', clipLimitSeconds: 15, languages: ['en']}]);
+    expect(calls.posts.at(-1)).toEqual(['/api/shot-lists/v1/render-batches', {size: '768x1344', steps: 24, turbo: true, musicMode: 'native', clipLimitSeconds: 15, languages: ['en'], confirmedReadiness: expect.any(Array)}]);
     p.input(field({productionBatch: 'steps'}, '0'));
     p.click('production-create-batch', {dataset: {id: 'v1'}}, ctx);
     expect(calls.failures.at(-1)).toBe('采样步数需为 1–60 的整数。');

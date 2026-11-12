@@ -1,8 +1,9 @@
 /** Production tab: the series profile and cast references, render batches with their review and render sessions,
  * and the older ways to reach a worker for version 1 batches.
  * Every displayed value is escaped. Session codes, a new worker token and the worker key stay in this page's memory only. */
-import type { Caption, Cut, CutSettings, CutSize, Episode, MediaAsset, ProductionCharacter, ProductionProfile, ProjectBundle, PublicRenderSession, RenderBatch, RenderJob, RenderJobV2, RenderSession, RetakeReason, Revision, ShotList } from '../src/types';
+import type { Caption, Cut, CutSettings, CutSize, Episode, MediaAsset, ProductionCharacter, ProductionProfile, ProjectBundle, PublicRenderSession, ReadinessItem, RenderBatch, RenderJob, RenderJobV2, RenderSession, RetakeReason, Revision, ShotList } from '../src/types';
 import { CUT_SETTING_RANGES, cutCurrent, cutSelection } from '../src/core/cut';
+import { readinessItems } from '../src/core/readiness';
 import { DEFAULT_CLIP_LIMIT, EMPTY_PROFILE, MIN_CLIP_LIMIT, STYLE_PRESETS, framesToSeconds, outputName } from '../src/core/h3';
 import { languageName, scriptLanguage } from '../src/core/languages';
 import { MEDIA_KINDS, formatBytes } from '../src/core/mediaKinds';
@@ -22,6 +23,8 @@ export const RENDER_SIZES: Record<ShotList['aspectRatio'], {value: string; label
   '16:9': [{value: '864x480', label: '864×480 · 省算力'}, {value: '1344x768', label: '1344×768 · H3 原生尺寸'}],
 };
 export const POLL_MS = 5000;
+const READINESS_STATUS: Record<ReadinessItem['status'], string> = {passed: '通过', warning: '提醒', failed: '未通过'};
+const TAB_LABELS: Record<ReadinessItem['link']['tab'], string> = {script: '剧本', review: '审稿', languages: '语言与发布', shots: '分镜', production: '制作设定'};
 
 export interface PublicWorkerToken { id: string; label: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
 /** GET /api/render-batches/:id/cut-plan */
@@ -102,6 +105,8 @@ export class ProductionPanel {
   private cutForms = new Map<string, CutFormDraft>();
   private cutNotes = new Map<string, string>();
   private musicLicense = '';
+  /** The IDs of the open readiness items the author confirmed, joined; a changed checklist needs a new confirmation. */
+  private readinessConfirmed = '';
   private timer: unknown = undefined;
   private polling = false;
   private generation = 0;
@@ -116,7 +121,7 @@ export class ProductionPanel {
     this.stopTimer(); this.generation++; this.polling = false; this.lastPoll = 0; this.pollError = '';
     this.sessions.clear(); this.code = null; this.copied = false; this.review = null; this.reasons.clear(); this.note = '';
     this.sessionDrafts.clear(); this.readings.clear(); this.rate = null; this.showMedia = false;
-    this.cutForms.clear(); this.cutNotes.clear(); this.musicLicense = '';
+    this.cutForms.clear(); this.cutNotes.clear(); this.musicLicense = ''; this.readinessConfirmed = '';
   }
   get changed(): boolean { return !!this.draft && this.draftFor !== '' && this.dirtyProfile; }
   /** True while a polling timer is waiting to fire. */
@@ -192,13 +197,34 @@ export class ProductionPanel {
     return `<div class="media-usage"><span class="small muted">媒体库：本系列 ${esc(media.length)} 个文件，共 ${esc(formatBytes(mediaUsage(media)))}。</span><button class="text-button" data-action="production-toggle-media" ${disabled}>${this.showMedia ? '收起' : '管理我上传的文件'}</button></div>${list}`;
   }
 
+  /** The checklist for a batch in the chosen languages, computed the way the server checks it. */
+  private readiness(ctx: ProductionContext): ReadinessItem[] {
+    const {episode, bundle} = ctx, revision = bundle.revisions.find(r => r.id === episode.acceptedRevisionId), list = productionList(bundle, episode).list;
+    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), reviews: bundle.reviews, localizations: bundle.localizations,
+      ...(bundle.project.production ? {profile: bundle.project.production} : {}), ...(this.languages ? {languages: this.languages} : {})});
+  }
+
+  private readinessView(items: ReadinessItem[], disabled: string): string {
+    const counts = {passed: 0, warning: 0, failed: 0};
+    for (const item of items) counts[item.status]++;
+    const open = items.filter(i => i.status !== 'passed').sort((a, b) => (a.status === 'failed' ? 0 : 1) - (b.status === 'failed' ? 0 : 1));
+    const signature = open.map(i => i.id).join('\n'), confirmed = !!open.length && this.readinessConfirmed === signature;
+    const row = (i: ReadinessItem) => `<li class="readiness-${esc(i.status)}"><span class="pill ${i.status === 'passed' ? 'accepted' : i.status === 'failed' ? 'changed' : ''}">${esc(READINESS_STATUS[i.status])}</span><span>${esc(i.message)}</span>`
+      + `${i.status === 'passed' ? '' : `<button class="text-button" data-action="tab" data-id="${esc(i.link.tab)}">去${esc(TAB_LABELS[i.link.tab])} →</button>`}</li>`;
+    return `<div class="readiness"><h3>开拍清单</h3><p class="small">${counts.failed ? `<strong>${esc(counts.failed)} 项未通过</strong> · ` : ''}${esc(counts.warning)} 项提醒 · ${esc(counts.passed)} 项通过</p>`
+      + `${open.length ? `<ul class="readiness-list">${open.map(row).join('')}</ul>` : '<p class="small">都通过了，可以开拍。</p>'}`
+      + `${items.some(i => i.status === 'passed') ? `<details><summary class="small">已通过的 ${esc(counts.passed)} 项</summary><ul class="readiness-list">${items.filter(i => i.status === 'passed').map(row).join('')}</ul></details>` : ''}`
+      + `${open.length ? `<label class="check-label readiness-confirm"><input type="checkbox" data-production-readiness-confirm ${confirmed ? 'checked' : ''} ${disabled}/><span>我已逐项看过上面 ${esc(open.length)} 项，确认带着这些问题开拍。确认会记在这一批里，并写进交付报告。</span></label>` : ''}</div>`;
+  }
+
   private batchForm(ctx: ProductionContext, list: ShotList, disabled: string): string {
     const source = scriptLanguage(ctx.revision), bound = boundAdaptations(list, ctx.bundle.localizations);
     const available = list.voiceLanguages.filter(l => l === source || bound[l]);
     const chosen = (this.languages ?? available).filter(l => available.includes(l));
+    const items = this.readiness(ctx), open = items.filter(i => i.status !== 'passed'), ready = !open.length || this.readinessConfirmed === open.map(i => i.id).join('\n');
     const missing = list.voiceLanguages.filter(l => !available.includes(l));
     const sizes = RENDER_SIZES[list.aspectRatio], size = sizes.some(s => s.value === this.size) ? this.size : sizes[0]!.value;
-    return `<section class="publication-panel"><div class="eyebrow">NEW RENDER BATCH</div><h2>生成渲染任务</h2>
+    return `<section class="publication-panel"><div class="eyebrow">NEW RENDER BATCH</div><h2>生成渲染任务</h2>${this.readinessView(items, disabled)}
       <p class="muted small">同一场里相邻的镜头合成一个片段，不超过片段上限。生成任务不调用模型，提示词可以在审片时逐条查看。</p>
       <div class="language-toolbar"><label for="prod-size">渲染尺寸</label><select id="prod-size" data-production-batch="size" ${disabled}>${sizes.map(s => `<option value="${esc(s.value)}" ${s.value === size ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select>
       <label for="prod-steps">采样步数</label><input id="prod-steps" class="small-input" type="number" min="1" max="60" step="1" value="${esc(this.steps)}" data-production-batch="steps" ${disabled}/>
@@ -207,7 +233,7 @@ export class ProductionPanel {
       <span class="small muted">整集配乐：片段里不生成背景音乐，剪辑时铺一条连续的配乐；片段自带的配乐每段各不相同，接起来会断开。</span></div>
       <div class="language-toolbar"><label for="prod-clip-limit">片段上限（秒）</label><input id="prod-clip-limit" class="small-input" type="number" min="${MIN_CLIP_LIMIT}" max="${DEFAULT_CLIP_LIMIT}" step="1" value="${esc(this.clipLimit)}" ${disabled}/>
       ${available.map(l => `<label class="check-label"><input type="checkbox" data-production-language="${esc(l)}" ${chosen.includes(l) ? 'checked' : ''} ${disabled}/><span>${esc(languageName(l))}</span></label>`).join('')}
-      <button class="button primary" data-action="production-create-batch" data-id="${esc(list.id)}" ${disabled || (chosen.length ? '' : 'disabled')}>生成渲染任务</button></div>
+      <button class="button primary" data-action="production-create-batch" data-id="${esc(list.id)}" ${disabled || (chosen.length && ready ? '' : 'disabled')}>生成渲染任务</button></div>
       ${missing.length ? `<p class="small muted">${missing.map(l => esc(languageName(l))).join('、')} 没有绑定逐行对齐的改编，暂时不能出这一语言的视频。</p>` : ''}</section>`;
   }
 
@@ -482,6 +508,11 @@ export class ProductionPanel {
       });
       return true;
     }
+    if (el.dataset.productionReadinessConfirm !== undefined && ctx) {
+      this.readinessConfirmed = (el as HTMLInputElement).checked ? this.readiness(ctx).filter(i => i.status !== 'passed').map(i => i.id).join('\n') : '';
+      this.hooks.render();
+      return true;
+    }
     if (el.dataset.productionMusicUpload !== undefined) {
       const file = (el as HTMLInputElement).files?.[0], rule = MEDIA_KINDS.music;
       if (!file || !ctx) return true;
@@ -526,9 +557,12 @@ export class ProductionPanel {
       if (this.dirtyProfile) { this.hooks.fail('制作设定有未保存的修改。先保存，再生成渲染任务。'); return true; }
       if (!Number.isInteger(this.steps) || this.steps < 1 || this.steps > 60) { this.hooks.fail('采样步数需为 1–60 的整数。'); return true; }
       const sizes = RENDER_SIZES[productionList(ctx.bundle, ctx.episode).list?.aspectRatio ?? '9:16'], size = sizes.some(s => s.value === this.size) ? this.size : sizes[0]!.value;
-      const body = {size, steps: this.steps, turbo: this.turbo, musicMode: this.musicMode, clipLimitSeconds: this.clipLimit, ...(this.languages ? {languages: this.languages} : {})};
+      const open = this.readiness(ctx).filter(i => i.status !== 'passed'), signature = open.map(i => i.id).join('\n');
+      if (open.length && this.readinessConfirmed !== signature) { this.hooks.fail(`开拍清单还有 ${open.length} 项没有通过。请逐项看过，勾选确认后再生成渲染任务。`); return true; }
+      const body = {size, steps: this.steps, turbo: this.turbo, musicMode: this.musicMode, clipLimitSeconds: this.clipLimit, ...(this.languages ? {languages: this.languages} : {}), ...(open.length ? {confirmedReadiness: open.map(i => i.id)} : {})};
       void this.hooks.run('正在生成渲染任务…', async () => {
         this.setBundle(await this.hooks.post<ProjectBundle>(`/api/shot-lists/${encodeURIComponent(id)}/render-batches`, body));
+        this.readinessConfirmed = '';
         this.hooks.notice('渲染任务已生成。在这一批下面开始渲染会话，就能交给 Colab 渲染。');
       });
       return true;

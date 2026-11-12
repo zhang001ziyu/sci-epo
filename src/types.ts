@@ -45,7 +45,7 @@ export interface RenderPrompt { mode: 't2va' | 'r2v'; text: string; images: stri
 export interface RenderClip { id: string; sceneId: string; shotIds: string[]; plannedSeconds: number; frames: number; seed: number; warnings: string[]; prompts: Record<string, RenderPrompt>; pictureKey?: string }
 /** An immutable render plan made from one production shot list.
  * Version 1 batches hand file names to workers; version 2 batches render through sessions into the media store. */
-export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string; version?: 2; preset?: RenderPreset; musicMode?: 'bed' | 'native'; references?: BatchReference[] }
+export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string; version?: 2; preset?: RenderPreset; musicMode?: 'bed' | 'native'; references?: BatchReference[]; readiness?: ReadinessRecord }
 /** A file in Sci-epo's media store, named by its SHA-256. */
 export type MediaKind = 'reference_image' | 'voice_sample' | 'music' | 'take_video' | 'qa_image' | 'qa_data' | 'cut_video' | 'report';
 export interface MediaAsset { id: string; projectId: string; kind: MediaKind; contentType: string; bytes: number; sha256: string; origin: 'owner' | 'worker' | 'sciepo'; sessionId?: string; label?: string; license?: string; createdAt: string }
@@ -54,6 +54,10 @@ export interface AssetRef { assetId: string; sha256: string }
 export interface StackRef { id: string; version: string }
 export interface RenderPreset { width: number; height: number; steps: number; turbo: boolean; stack: StackRef }
 export interface BatchReference extends AssetRef { name: string; kind: 'image' | 'audio'; character: string }
+/** One item of the readiness checklist, with the tab where the author fixes it. */
+export interface ReadinessItem { id: string; status: 'passed' | 'warning' | 'failed'; message: string; link: {tab: 'script' | 'review' | 'languages' | 'shots' | 'production'; target?: string} }
+/** The checklist as it was when the batch was created, and the items the author confirmed. */
+export interface ReadinessRecord { items: ReadinessItem[]; confirmed: string[]; confirmedAt?: string }
 export type RetakeReason = 'picture_broken' | 'character_drift' | 'line_wrong' | 'lip_sync' | 'garbled_text' | 'other';
 export interface QaCheck { id: string; status: 'pass' | 'warning' | 'failure'; message: string; value?: number }
 export interface SpeechLine { sceneId: string; position: number; language: string; expected: string; heard: string; score: number }

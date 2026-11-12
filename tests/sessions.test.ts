@@ -53,7 +53,10 @@ function harness() {
     const episode = store.get('episodes', e.id)!;
     expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
     expect((await call(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null})).status).toBe(200);
-    const created = await call(`/api/shot-lists/${list.id}/render-batches`, batchBody);
+    // Demo episodes have no live review, so the author confirms the open readiness items.
+    const items = (await call(`/api/episodes/${e.id}/readiness`)).body.items as {id: string; status: string}[];
+    expect((await call(`/api/shot-lists/${list.id}/render-batches`, batchBody)).status).toBe(409);
+    const created = await call(`/api/shot-lists/${list.id}/render-batches`, {...batchBody, confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)});
     expect(created.status).toBe(200);
     const bundle = created.body as ProjectBundle, batch = bundle.renderBatches!.at(-1)!;
     return {p, e, r, list, bundle, batch, jobs: bundle.renderJobsV2!.filter(j => j.batchId === batch.id), portrait: portrait.body.asset as MediaAsset};
@@ -89,6 +92,9 @@ describe('v2 render batches', () => {
   test('only R2V sizes of the aspect ratio are accepted, and v1 routes refuse v2 batches', async () => {
     const h = harness(), {list, batch} = await h.ready({size: '768x1344', musicMode: 'native'});
     expect(batch.preset).toMatchObject({width: 768, height: 1344});
+    expect(batch.readiness!.items.find(i => i.id === 'review')).toMatchObject({status: 'failed'});
+    expect(batch.readiness!.confirmed).toContain('review');
+    expect(batch.readiness!.items.find(i => i.id === 'portrait:MAYA')).toMatchObject({status: 'passed'});
     expect(batch.clips.every(c => Object.values(c.prompts).every(p => p.text.includes('A low synth drone.')))).toBe(true);
     expect((await h.call(`/api/shot-lists/${list.id}/render-batches`, {size: '1344x768'})).status).toBe(400);
     expect((await h.call(`/api/render-batches/${batch.id}/package`)).status).toBe(409);

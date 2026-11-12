@@ -5,6 +5,7 @@ import type { BatchReference, Episode, MediaAsset, ProductionCharacter, Project,
 import { EMPTY_PROFILE, RENDER_RESULTS_FORMAT, RenderPlanError, parseProductionProfile, parseRenderResults, planRenderBatch, renderPackage, type RenderResult } from '../core/h3';
 import { normalizeSpeakerName } from '../core/scriptLines';
 import { planJobsV2, takeSeed } from '../core/renderPlan';
+import { readinessItems, unconfirmedItems } from '../core/readiness';
 import { boundAdaptations, shotListStatus } from '../core/shotList';
 import type { MediaStore } from './media';
 import { DEFAULT_STACK_ID, RENDER_SIZES, type Stacks } from './stacks';
@@ -51,8 +52,22 @@ export class Production {
     return !!episode && !!list && shotListStatus(list, episode).current;
   }
 
+  /** The readiness checklist of an episode for a batch in these languages (all voice languages with text when absent). */
+  readiness(episodeId: string, languages?: string[]) {
+    const episode = this.store.get('episodes', episodeId) ?? this.fail(404, '找不到集数。');
+    const project = this.store.get('projects', episode.projectId) ?? this.fail(404, '找不到系列。');
+    const revision = episode.acceptedRevisionId ? this.store.get('revisions', episode.acceptedRevisionId) : undefined;
+    const list = episode.productionShotListId ? this.store.get('shot_lists', episode.productionShotListId) : undefined;
+    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), reviews: this.store.all('reviews').filter(r => r.revisionId === revision?.id),
+      localizations: this.store.all('localizations').filter(l => l.sourceRevisionId === revision?.id), ...(project.production ? {profile: project.production} : {}), ...(languages ? {languages} : {})});
+  }
+
   /** Owner GET routes; undefined when the path is not a production route. */
-  get(a: string | undefined, target: string | undefined, action: string | undefined): Response | unknown | undefined {
+  get(a: string | undefined, target: string | undefined, action: string | undefined, url?: URL): Response | unknown | undefined {
+    if (a === 'episodes' && target && action === 'readiness') {
+      const raw = url?.searchParams.get('languages');
+      return {items: this.readiness(target, raw ? raw.split(',').map(l => l.trim()).filter(Boolean).slice(0, 6) : undefined)};
+    }
     if (a === 'render-batches' && target && action === 'package') {
       const body = JSON.stringify(this.package(this.v1(this.batch(target))), null, 2);
       return new Response(body, {headers: {'content-type': 'application/json; charset=utf-8', 'content-disposition': `attachment; filename="sciepo-render-${target}.json"`}});
@@ -171,6 +186,8 @@ export class Production {
     if (body.turbo !== undefined && typeof body.turbo !== 'boolean') this.fail(400, '加速开关需为是或否。');
     const musicMode = body.musicMode === undefined || body.musicMode === 'bed' ? 'bed' as const : body.musicMode === 'native' ? 'native' as const : this.fail(400, '配乐方式只能是整集配乐（bed）或片段自带（native）。');
     const preset = {width: size.width, height: size.height, steps, turbo: body.turbo === true, stack: {id: stack.id, version: stack.version}};
+    const confirmed = body.confirmedReadiness === undefined ? [] : Array.isArray(body.confirmedReadiness) && body.confirmedReadiness.length <= 500 && body.confirmedReadiness.every(id => typeof id === 'string' && id.length <= 200)
+      ? [...new Set(body.confirmedReadiness as string[])] : this.fail(400, '确认的开拍清单项格式无效。');
     // References come from the media store; a bare file name from a v1 profile cannot reach a session's worker.
     const profile = project.production ?? EMPTY_PROFILE, references: BatchReference[] = [], warnings: string[] = [];
     const reference = (character: string, ref: {assetId: string; sha256: string}, kind: 'image' | 'audio') => {
@@ -196,7 +213,12 @@ export class Production {
     } catch (error) { if (error instanceof RenderPlanError) return this.fail(400, error.message); throw error; }
     const {clips, jobs} = planJobsV2(plan.batch, preset, references, episode.ordinal);
     for (const clip of clips) if (Object.values(clip.prompts).some(p => p.mode === 't2va') && !stack.workflows.t2va) warnings.push(`片段 ${clip.id} 没有入镜角色的参考图，要用文生模式（T2VA）；${stack.label} 还没有可用的 T2VA 工作流，这一段会失败。请给入镜角色上传并选定参考图。`);
-    const batch: RenderBatch = {...plan.batch, version: 2, preset, musicMode, references, clips, warnings: [...new Set([...plan.batch.warnings, ...warnings])]};
+    // Readiness after the plan, so wrong settings are reported first: every item passes, or the author confirms each
+    // remaining item by its ID. The checklist and the confirmation stay with the batch.
+    const items = this.readiness(episode.id, input.languages), open = unconfirmedItems(items, confirmed);
+    if (open.length) this.fail(409, `开拍前还有 ${open.length} 项没有通过，也没有确认：${open.slice(0, 5).map(i => i.message).join('；')}${open.length > 5 ? '……' : ''} 请先处理，或在开拍清单里逐项确认后再生成渲染任务。`);
+    const readiness = {items, confirmed: confirmed.filter(id => items.some(i => i.id === id && i.status !== 'passed')), ...(items.some(i => i.status !== 'passed') ? {confirmedAt: this.now()} : {})};
+    const batch: RenderBatch = {...plan.batch, version: 2, preset, musicMode, references, clips, readiness, warnings: [...new Set([...plan.batch.warnings, ...warnings])]};
     this.store.db.transaction(() => {
       this.store.insert('render_batches', batch);
       for (const job of jobs) {

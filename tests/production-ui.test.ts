@@ -47,7 +47,9 @@ describe('production tab', () => {
     expect(html).toContain('data-production-character="1" data-field="appearance"');
     expect(html).toContain('data-production-language="en" checked');
     expect(html).toContain('data-production-language="zh-CN" checked');
-    expect(html).toContain('data-action="production-create-batch" data-id="v1" >生成渲染任务');
+    expect(html).toContain('data-action="production-create-batch" data-id="v1" ');
+    expect(html).toContain('>生成渲染任务</button>');
+    expect(html).toContain('<h3>开拍清单</h3>');
   });
 
   test('batches show escaped status, errors, counts, prompts and the three connection modes', () => {

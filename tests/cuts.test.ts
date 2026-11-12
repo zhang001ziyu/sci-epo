@@ -63,7 +63,8 @@ function harness(options: {spawn?: Spawner; tools?: boolean; store?: Store; dir?
     const episode = store.get('episodes', e.id)!;
     expect((await call(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true})).status).toBe(200);
     expect((await call(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null})).status).toBe(200);
-    const bundle = (await call(`/api/shot-lists/${list.id}/render-batches`, {})).body as ProjectBundle, batch = bundle.renderBatches!.at(-1)!;
+    const items = (await call(`/api/episodes/${e.id}/readiness`)).body.items as {id: string; status: string}[];
+    const bundle = (await call(`/api/shot-lists/${list.id}/render-batches`, {confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)})).body as ProjectBundle, batch = bundle.renderBatches!.at(-1)!;
     return {p, e, r, list, batch};
   }
   /** Render every take of a batch through one session; each video is the given bytes, or a distinct stub. */
@@ -234,7 +235,8 @@ describe.skipIf(!tools)('a real cut with ffmpeg', () => {
     const episode = store.get('episodes', e.id)!;
     await json(`/api/episodes/${e.id}/accept`, {revisionId: r.id, expectedAcceptedRevisionId: null, expectedContextToken: store.contextToken(episode), acknowledgeReview: true, acknowledgeLengthException: true});
     await json(`/api/episodes/${e.id}/production-shot-list`, {shotListId: list.id, expectedShotListId: null});
-    const batch = (await json(`/api/shot-lists/${list.id}/render-batches`, {})).renderBatches.at(-1);
+    const items = (await json(`/api/episodes/${e.id}/readiness`)).items as {id: string; status: string}[];
+    const batch = (await json(`/api/shot-lists/${list.id}/render-batches`, {confirmedReadiness: items.filter(i => i.status !== 'passed').map(i => i.id)})).renderBatches.at(-1);
     const {code} = await json(`/api/projects/${p.project.id}/render-sessions`, {batchIds: [batch.id]});
     const auth = {authorization: `Bearer ${code.split('#')[1]}`};
     const clips = [clip(0), clip(1)];

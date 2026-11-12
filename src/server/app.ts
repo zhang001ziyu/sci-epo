@@ -227,7 +227,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    return new Response(JSON.stringify({schemaVersion:2,project:p.title,episode:e.title,sourceRevisionId:r.id,sourceLanguage:scriptLanguage(r),sourceAccepted:e.acceptedRevisionId===r.id&&!e.needsReview,settings,versions,productionStatus,pending,timedSubtitlesAvailable:false},null,2),{headers:{'content-type':'application/json','content-disposition':`attachment; filename="sci-epo-publication-${r.id}.json"`}});
   }
   if(method==='GET'&&a==='media'&&target&&!action){const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。');return media.serve(req,asset);}
-  if(method==='GET'){const handled=production.get(a,target,action)??sessions.get(a,target,action)??cuts.get(a,target,action,url);if(handled!==undefined)return handled;}
+  if(method==='GET'){const handled=production.get(a,target,action,url)??sessions.get(a,target,action)??cuts.get(a,target,action,url);if(handled!==undefined)return handled;}
   // Owner uploads are raw bodies streamed into the media store, so they skip the JSON rules below.
   if(method==='PUT'&&a==='projects'&&target&&action==='media'&&!parts[4]){
    const p=project(target),kind=url.searchParams.get('kind');
