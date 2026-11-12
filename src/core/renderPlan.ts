@@ -1,13 +1,11 @@
 /** Version 2 render plans: picture and job keys, one job per distinct render, per-take seeds, the lines and shot
  * times a worker checks against, and default speed estimates. Server-only (node:crypto); prompts come from h3.ts. */
 import { createHash } from 'node:crypto';
-import type { BatchReference, RenderBatch, RenderClip, RenderPreset, ShotList, StackRef } from '../types';
+import type { BatchReference, RenderBatch, RenderClip, RenderPreset, StackRef } from '../types';
 import { canonicalJsonBytes } from './canonicalJson';
-import { H3_FPS } from './h3';
 
 export const sha256Hex = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex');
 const pad2 = (value: number) => String(value).padStart(2, '0');
-const round3 = (value: number) => Math.round(value * 1000) / 1000;
 
 /** FNV-1a over "pictureKey:n": every language of a clip gets the same seed for the same take number. */
 export function takeSeed(pictureKey: string, n: number): number {
@@ -44,28 +42,8 @@ export function planJobsV2(batch: Pick<RenderBatch, 'clips' | 'languages'>, pres
   return {clips, jobs};
 }
 
-/** The spoken lines of a clip in one language, in prompt order: the words inside <d>, with scene and line position. */
-export function spokenLines(clip: RenderClip, list: Pick<ShotList, 'shots'>, language: string): {sceneId: string; position: number; language: string; text: string}[] {
-  const prompt = clip.prompts[language];
-  if (!prompt) return [];
-  const words = [...prompt.text.matchAll(/<d>\[[A-Za-z]+\] ([\s\S]*?)<\/d>/gu)].map(m => m[1]!);
-  const positions = clip.shotIds.flatMap(id => {
-    const shot = list.shots.find(s => s.id === id);
-    return shot ? [...shot.spoken].sort((a, b) => a.line - b.line).map(s => ({sceneId: shot.sceneId, position: s.line})) : [];
-  });
-  return words.map((text, index) => ({sceneId: positions[index]?.sceneId ?? clip.sceneId, position: positions[index]?.position ?? 0, language, text}));
-}
-
-/** Planned start and end of each shot inside its clip; the last shot ends with the clip's frames. */
-export function shotTimes(clip: Pick<RenderClip, 'shotIds' | 'frames'>, list: Pick<ShotList, 'shots'>): {shotId: string; start: number; end: number}[] {
-  const length = clip.frames / H3_FPS;
-  let t = 0;
-  return clip.shotIds.map((id, index) => {
-    const start = Math.min(t, length);
-    t += list.shots.find(s => s.id === id)?.durationSeconds ?? 0;
-    return {shotId: id, start: round3(start), end: round3(index === clip.shotIds.length - 1 ? length : Math.min(t, length))};
-  });
-}
+// Browser-safe clip helpers live in h3.ts, so cuts can use them without node:crypto; existing imports keep working.
+export { shotTimes, spokenLines } from './h3';
 
 /** Key of a measured rate: stack, size, sampling steps and GPU. */
 export const rateKey = (stack: StackRef, width: number, height: number, steps: number, gpu: string) =>

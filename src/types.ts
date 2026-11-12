@@ -33,8 +33,10 @@ export interface Run { id: string; episodeId: string; kind: 'generate' | 'review
 export const SHOT_SIZES = ['extreme_close_up','close_up','medium_close_up','medium','medium_wide','wide','insert'] as const;
 export const CAMERA_MOVES = ['static','push_in','pull_out','pan','tilt','track','handheld'] as const;
 export interface CastMember { id: string; name: string }
-/** Lines are positions among a scene's non-blank lines, counting from 1. Shots never store script text. */
-export interface Shot { id: string; sceneId: string; firstLine: number; lastLine: number; size: typeof SHOT_SIZES[number]; camera: typeof CAMERA_MOVES[number]; characters: string[]; spoken: { line: number; castId: string }[]; durationSeconds: number; composition?: string; sound?: string }
+/** Lines are positions among a scene's non-blank lines, counting from 1. Shots never store script text.
+ * screenText lists the lines whose readable text appears on a phone, note, sign or document; an empty list means none,
+ * and a shot without the field falls back to its non-dialogue lines with quoted text. */
+export interface Shot { id: string; sceneId: string; firstLine: number; lastLine: number; size: typeof SHOT_SIZES[number]; camera: typeof CAMERA_MOVES[number]; characters: string[]; spoken: { line: number; castId: string }[]; durationSeconds: number; composition?: string; sound?: string; screenText?: number[] }
 export interface ShotListContent { cast: CastMember[]; shots: Shot[] }
 /** An immutable shot-list version bound to one revision and, per extra voice language, one line-aligned adaptation. */
 export interface ShotList extends ShotListContent { id: string; episodeId: string; sourceRevisionId: string; parentId: string | null; aspectRatio: '9:16' | '16:9'; voiceLanguages: string[]; adaptations: Record<string, string>; mode: ProviderMode; createdAt: string }
@@ -75,13 +77,30 @@ export interface RenderSession {
   readings?: {before?: number; after?: number};
 }
 export type PublicRenderSession = Omit<RenderSession, 'tokenHash'>;
+/** Output size of a cut: as rendered, or scaled to cover the frame and cropped. */
+export type CutSize = 'native' | '720x1280' | '1080x1920' | '1280x720' | '1920x1080';
+/** How a cut is levelled, scored and normalized. Levels in dB, loudness in LUFS, fades in milliseconds. */
+export interface CutSettings { musicAssetId: string | null; noMusic?: boolean; musicLevelDb: number; dialogueLufs: number; ambienceLufs: number; maxGainDb: number; targetLufs: number; truePeakDb: number; fadeMs: number; size: CutSize }
+/** A caption for the on-screen text of one shot, timed in cut seconds. */
+export interface Caption { shotId: string; start: number; end: number; text: string; enabled: boolean }
+/** One clip of a cut: the take it uses, where it starts in the cut and the gain that levels it. */
+export interface CutClip { clipId: string; jobId: string; take: number; sha256: string; assetId: string; offset: number; seconds: number; gainDb: number; dialogue: boolean }
+/** One v2 batch edited in one language. A draft uses the latest rendered takes, a final cut the approved ones. */
+export interface Cut {
+  id: string; batchId: string; projectId: string; language: string; kind: 'draft' | 'final';
+  clips: CutClip[]; settings: CutSettings; captions: Caption[];
+  status: 'queued' | 'running' | 'done' | 'failed';
+  output?: {assetId: string; sha256: string; bytes: number; seconds: number; loudness: number | null; truePeak: number | null};
+  signOff?: {decision: 'signed_off' | 'rejected'; note?: string; at: string; reportAssetId?: string};
+  rehearsal?: boolean; warnings?: string[]; error?: string; startedAt?: string; finishedAt?: string; createdAt: string; updatedAt: string;
+}
 /** Measured seconds per frame for one stack, size, step count, turbo switch and GPU. */
 export interface RenderRate { id: string; samples: number[]; updatedAt: string }
 export interface RenderOutput { file: string; seconds?: number; bytes?: number; sha256?: string }
 export interface RenderJob { id: string; batchId: string; clipId: string; language: string; order: number; status: 'queued' | 'claimed' | 'succeeded' | 'failed'; attempts: number; workerTokenId?: string; workerLabel?: string; leaseExpiresAt?: string; output?: RenderOutput; error?: string; updatedAt: string }
 /** Only the SHA-256 of a worker token is stored. */
 export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
-export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[] }
+export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[]; cuts?: Cut[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
 export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard'; context: ContextSnapshot; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

@@ -1,11 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { canonicalJsonBytes } from '../core/canonicalJson';
-import type { Project, Episode, Revision, Review, Run, ProjectBundle, Localization, ShotList, RenderBatch, RenderJob, WorkerToken, MediaAsset, RenderJobV2, RenderSession, RenderRate } from '../types';
+import type { Project, Episode, Revision, Review, Run, ProjectBundle, Localization, ShotList, RenderBatch, RenderJob, WorkerToken, MediaAsset, RenderJobV2, RenderSession, RenderRate, Cut } from '../types';
 
-type Tables = {projects: Project; episodes: Episode; revisions: Revision; reviews: Review; runs: Run; localizations: Localization; shot_lists: ShotList; render_batches: RenderBatch; render_jobs: RenderJob; worker_tokens: WorkerToken; media_assets: MediaAsset; render_jobs_v2: RenderJobV2; render_sessions: RenderSession; render_rates: RenderRate};
-const TABLES = ['projects','episodes','revisions','reviews','runs','localizations','shot_lists','render_batches','render_jobs','worker_tokens','media_assets','render_jobs_v2','render_sessions','render_rates'] as const;
-type Mutable = 'projects'|'episodes'|'runs'|'render_jobs'|'worker_tokens'|'render_jobs_v2'|'render_sessions'|'render_rates';
+type Tables = {projects: Project; episodes: Episode; revisions: Revision; reviews: Review; runs: Run; localizations: Localization; shot_lists: ShotList; render_batches: RenderBatch; render_jobs: RenderJob; worker_tokens: WorkerToken; media_assets: MediaAsset; render_jobs_v2: RenderJobV2; render_sessions: RenderSession; render_rates: RenderRate; cuts: Cut};
+const TABLES = ['projects','episodes','revisions','reviews','runs','localizations','shot_lists','render_batches','render_jobs','worker_tokens','media_assets','render_jobs_v2','render_sessions','render_rates','cuts'] as const;
+type Mutable = 'projects'|'episodes'|'runs'|'render_jobs'|'worker_tokens'|'render_jobs_v2'|'render_sessions'|'render_rates'|'cuts';
 export class Store {
  readonly db: Database;
  constructor(path = ':memory:') {
@@ -42,7 +42,7 @@ export class Store {
   const renderBatches=this.all('render_batches').filter(b=>ids.has(b.episodeId)), batchIds=new Set(renderBatches.map(b=>b.id));
   const renderSessions=this.all('render_sessions').filter(s=>s.projectId===id).map(({tokenHash:_hash,...s})=>s);
   return {project,episodes,revisions,reviews:this.all('reviews').filter(r=>revIds.has(r.revisionId)),runs:this.all('runs').filter(r=>ids.has(r.episodeId)),localizations:this.all('localizations').filter(r=>revIds.has(r.sourceRevisionId)),shotLists:this.all('shot_lists').filter(l=>revIds.has(l.sourceRevisionId)),renderBatches,renderJobs:this.all('render_jobs').filter(j=>batchIds.has(j.batchId)),
-   renderJobsV2:this.all('render_jobs_v2').filter(j=>batchIds.has(j.batchId)),renderSessions,media:this.all('media_assets').filter(m=>m.projectId===id)};
+   renderJobsV2:this.all('render_jobs_v2').filter(j=>batchIds.has(j.batchId)),renderSessions,media:this.all('media_assets').filter(m=>m.projectId===id),cuts:this.all('cuts').filter(c=>batchIds.has(c.batchId))};
  }
  recoverInterrupted() {for(const run of this.all('runs').filter(r=>r.status==='running')) this.update('runs',{...run,status:'failed',error:'服务重启中断了任务；请检查已有版本后重试。',finishedAt:new Date().toISOString()});}
  close(){this.db.close();}

@@ -35,6 +35,7 @@ const app=createApp(store,{demo:demoProvider,managed},root,{publicOrigin,media:{
 // JSON routes check their own limit; the larger cap is for media uploads, which are checked per kind while streaming.
 const server=Bun.serve({hostname:'127.0.0.1',port,idleTimeout:0,maxRequestBodySize:300*1024*1024,fetch:app});
 console.log(`Sci-epo: ${server.url} · ${managed.ready()?'创作模型配置已加载':'未配置真实模型；示例演练可用'}`);
+if(!app.cuts.tools())console.log('Sci-epo: 找不到 ffmpeg，成片剪辑不可用。安装 ffmpeg 后重启，或用 SCIEPO_FFMPEG 和 SCIEPO_FFPROBE 写明路径。');
 // Optional second listener with only the worker API, for a tunnel from Colab to a Sci-epo on this computer.
 const workerPort=process.env.SCIEPO_WORKER_PORT?Number(process.env.SCIEPO_WORKER_PORT):undefined;
 const workerServer=workerPort?Bun.serve({hostname:'127.0.0.1',port:workerPort,idleTimeout:0,maxRequestBodySize:80*1024*1024,fetch:app.worker}):undefined;

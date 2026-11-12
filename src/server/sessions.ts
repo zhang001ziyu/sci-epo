@@ -28,7 +28,8 @@ const round1 = (value: number) => Math.round(value * 10) / 10;
 const round2 = (value: number) => Math.round(value * 100) / 100;
 export const publicSession = ({tokenHash: _hash, ...session}: RenderSession): PublicRenderSession => session;
 
-export interface SessionOptions { clock: () => Date; publicUrl?: string }
+/** onTakeRendered runs after a worker's take is stored as rendered, for example to queue a draft cut. */
+export interface SessionOptions { clock: () => Date; publicUrl?: string; onTakeRendered?: (jobId: string) => void }
 
 export class Sessions {
   constructor(private store: Store, private media: MediaStore, private stacks: Stacks, private production: Production, private fail: Fail, private id: () => string, private options: SessionOptions) {}
@@ -401,6 +402,8 @@ export class Sessions {
       const event: SessionEvent = {at: finishedAt, stage: 'take_done', message: `${job.outputName} · take ${take.n} · ${status === 'rendered' ? '完成' : '失败'}`};
       this.store.update('render_sessions', {...fresh, lastResultAt: finishedAt, events: [...fresh.events, event].slice(-300)});
     })();
+    // The take is stored; nothing that follows from it may fail the worker's report.
+    if (status === 'rendered') try { this.options.onTakeRendered?.(job.id); } catch { /* the take stays rendered */ }
     return {ok: true};
   }
 

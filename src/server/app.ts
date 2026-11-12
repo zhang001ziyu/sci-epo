@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { MediaStore } from './media';
 import { Stacks } from './stacks';
 import { Sessions } from './sessions';
+import { Cuts, type CutsOptions } from './cuts';
 import { OWNER_KINDS, isMediaKind } from '../core/mediaKinds';
 import { reviewSuggestion } from '../core/reviewSuggestions';
 import { AuditValidationError, createModelCaller } from './modelAttempts';
@@ -35,7 +36,7 @@ function formatFields(b:Record<string,unknown>,stored?:Brief):Pick<Brief,'format
  try{return {format,durationTarget:raw===undefined||raw===null?{...DEFAULT_DURATION_TARGET}:parseDurationTarget(raw)};}catch(error){return fail(400,error instanceof Error?error.message:'目标时长无效。');}
 }
 function brief(value:unknown,stored?:Brief):Brief {const b=obj(value);const format=formatFields(b,stored);let lengthTarget;try {if(b.lengthTarget!==undefined&&b.lengthTarget!==null)lengthTarget=parseLengthTarget(b.lengthTarget);}catch(error){return fail(400,error instanceof Error?error.message:'篇幅范围无效。');}return {title:str(b.title,'系列标题',200),premise:str(b.premise,'故事前提'),characters:str(b.characters,'人物资料',30000,true),worldRules:str(b.worldRules,'世界规则',30000,true),authorRules:str(b.authorRules,'作者要求',30000,true),...(b.language!==undefined?{language:validLanguage(b.language)}:{}),...(b.glossary!==undefined?{glossary:str(b.glossary,'术语表',30000,true)}:{}),...(lengthTarget?{lengthTarget}:{}),...format};}
-export interface AppOptions { publicOrigin?:string; production?:ProductionOptions; media?:{dir?:string;quotaMb?:number}; workerPublicUrl?:string }
+export interface AppOptions { publicOrigin?:string; production?:ProductionOptions; media?:{dir?:string;quotaMb?:number}; workerPublicUrl?:string; cuts?:CutsOptions }
 export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:AppOptions={}) {
  const auth=options.publicOrigin?new Auth(store.db,options.publicOrigin):undefined;
  const clock=options.production?.clock??(()=>new Date());
@@ -43,7 +44,9 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
  const media=new MediaStore(store,options.media?.dir??join(tmpdir(),`sciepo-media-${process.pid}`),(options.media?.quotaMb??5120)*1024*1024,fail,id,()=>clock().toISOString());
  const stacks=new Stacks(root);
  const production=new Production(store,fail,id,{...options.production,media,stacks});
- const sessions=new Sessions(store,media,stacks,production,fail,id,{clock,...(options.workerPublicUrl??auth?.origin?{publicUrl:options.workerPublicUrl??auth!.origin}:{})});
+ // Cuts start their runner here, after running cuts of an earlier server process have gone back to the queue.
+ const cuts=new Cuts(store,media,fail,id,{clock,...options.cuts});
+ const sessions=new Sessions(store,media,stacks,production,fail,id,{clock,...(options.workerPublicUrl??auth?.origin?{publicUrl:options.workerPublicUrl??auth!.origin}:{}),onTakeRendered:jobId=>cuts.takeRendered(jobId)});
  function project(pid:string){return store.get('projects',pid)??fail(404,'找不到系列。');}
  function episode(eid:string){return store.get('episodes',eid)??fail(404,'找不到集数。');}
  function revision(rid:string){return store.get('revisions',rid)??fail(404,'找不到剧本版本。');}
@@ -212,11 +215,19 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   if(method==='GET'&&a==='revisions'&&target&&action==='publication'){
    const r=revision(target),e=episode(r.episodeId),p=project(e.projectId),settings=p.publication??defaultPublication();
    const languages=[...new Set([settings.audioLanguage,...settings.subtitleLanguages])];
-   const versions=languages.map(language=>({language,sourceRevisionId:r.id,localizationId:language===scriptLanguage(r)?null:store.all('localizations').filter(l=>l.sourceRevisionId===r.id&&l.language===language).at(-1)?.id??null,available:language===scriptLanguage(r)||store.all('localizations').some(l=>l.sourceRevisionId===r.id&&l.language===language)}));
-   return new Response(JSON.stringify({schemaVersion:1,project:p.title,episode:e.title,sourceRevisionId:r.id,sourceLanguage:scriptLanguage(r),sourceAccepted:e.acceptedRevisionId===r.id&&!e.needsReview,settings,versions,productionStatus:'planning_only',pending:['语言版本由作者复核','配音与画面制作','按最终配音和剪辑对齐字幕时间轴'],timedSubtitlesAvailable:false},null,2),{headers:{'content-type':'application/json','content-disposition':`attachment; filename="sci-epo-publication-${r.id}.json"`}});
+   // Schema 2: a language is delivered by the newest signed-off final cut of this revision whose takes are still approved.
+   const versions=languages.map(language=>{
+    const cut=cuts.delivered(r.id,language),batch=cut?store.get('render_batches',cut.batchId):undefined;
+    return {language,sourceRevisionId:r.id,localizationId:language===scriptLanguage(r)?null:store.all('localizations').filter(l=>l.sourceRevisionId===r.id&&l.language===language).at(-1)?.id??null,available:language===scriptLanguage(r)||store.all('localizations').some(l=>l.sourceRevisionId===r.id&&l.language===language),
+     cut:cut?.output&&batch?{id:cut.id,sha256:cut.output.sha256,seconds:cut.output.seconds,batchId:batch.id,shotListId:batch.shotListId,localizationId:batch.adaptations[language]??null}:null,
+     productionStatus:cut?.output&&batch?'delivered' as const:'planning_only' as const};
+   });
+   const delivered=versions.filter(v=>v.cut).length,productionStatus=!delivered?'planning_only':delivered===versions.length?'delivered':'partly_delivered';
+   const pending=productionStatus==='delivered'?['按最终配音和剪辑对齐字幕时间轴']:productionStatus==='partly_delivered'?['语言版本由作者复核','其余语言的配音与画面制作','按最终配音和剪辑对齐字幕时间轴']:['语言版本由作者复核','配音与画面制作','按最终配音和剪辑对齐字幕时间轴'];
+   return new Response(JSON.stringify({schemaVersion:2,project:p.title,episode:e.title,sourceRevisionId:r.id,sourceLanguage:scriptLanguage(r),sourceAccepted:e.acceptedRevisionId===r.id&&!e.needsReview,settings,versions,productionStatus,pending,timedSubtitlesAvailable:false},null,2),{headers:{'content-type':'application/json','content-disposition':`attachment; filename="sci-epo-publication-${r.id}.json"`}});
   }
   if(method==='GET'&&a==='media'&&target&&!action){const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。');return media.serve(req,asset);}
-  if(method==='GET'){const handled=production.get(a,target,action)??sessions.get(a,target,action);if(handled!==undefined)return handled;}
+  if(method==='GET'){const handled=production.get(a,target,action)??sessions.get(a,target,action)??cuts.get(a,target,action,url);if(handled!==undefined)return handled;}
   // Owner uploads are raw bodies streamed into the media store, so they skip the JSON rules below.
   if(method==='PUT'&&a==='projects'&&target&&action==='media'&&!parts[4]){
    const p=project(target),kind=url.searchParams.get('kind');
@@ -369,11 +380,11 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    }
   }
   if(a==='media'&&target&&action==='delete'&&method==='POST'){
-   const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。'),reason=production.mediaInUse(asset);
+   const asset=store.get('media_assets',target)??fail(404,'找不到这个文件。'),reason=production.mediaInUse(asset)??cuts.mediaInUse(asset);
    if(reason)return fail(409,`不能删除：${reason}`);
    media.delete(asset);return store.bundle(asset.projectId);
   }
-  const handled=await production.post(method,a,target,action,body)??sessions.post(method,a,target,action,body,url.origin);if(handled!==undefined)return handled;
+  const handled=await production.post(method,a,target,action,body)??sessions.post(method,a,target,action,body,url.origin)??await cuts.post(method,a,target,action,body);if(handled!==undefined)return handled;
   return fail(404,'未找到接口。');
  }
  const securityHeaders={'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'};
@@ -417,5 +428,5 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    return response;
   }catch(error){const known=error instanceof HttpError||error instanceof AuthError||error instanceof ProviderAdminError;return Response.json({error:known?error.message:'请求失败，已有内容已保留。'},{status:known?error.status:500,headers});}
  };
- return Object.assign(appFetch,{worker});
+ return Object.assign(appFetch,{worker,cuts});
 }

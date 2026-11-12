@@ -1,6 +1,6 @@
 /** Model instructions for shot-list generation. Server-only, so the browser bundle carries no prompts. */
 import type { Revision } from '../types';
-import { MAX_SHOT_SECONDS, aspectRatioOf } from './formats';
+import { MAX_SHOT_SECONDS, aspectRatioOf, isShortDrama } from './formats';
 import { durationInstruction, studioIntro } from './formatPrompts';
 import { scriptLanguage } from './languages';
 import { scriptLines } from './scriptLines';
@@ -16,11 +16,14 @@ durationSeconds 是本镜预计时长（秒，可带一位小数）：先按正�
 composition 用一句话写构图和人物位置，sound 写本镜需要的环境声或音效，可以省略；两者使用剧本语言。只描述画面内容，不写画风、渲染方式、镜头型号或软件名称，让动画和写实制作都能使用。
 `.trim();
 
+/** Vertical short drama only: the lines that show readable text, so the cut can caption them in every language. */
+export const SCREEN_TEXT_GUIDANCE = 'screenText 列出本镜中可读文字出现在手机、便条、招牌或文件上的行号（例如手机消息、订单备注、门牌、信件），只写行号，不复制文字；本镜没有这样的行就写 []。';
+
 export function buildStoryboardMessages(revision: Revision): {role: 'system' | 'user'; content: string}[] {
-  const brief = revision.context.brief, duration = durationInstruction(brief);
-  const format = '{"cast":[{"id":"C1","name":"剧本中的人名"}],"shots":[{"id":"sh1","sceneId":"s1","firstLine":1,"lastLine":2,"size":"close_up","camera":"static","characters":["C1"],"spoken":[{"line":2,"castId":"C1"}],"durationSeconds":4.5,"composition":"一句话写构图和人物在画面中的位置","sound":"本镜需要的环境声或音效，可省略"}]}';
+  const brief = revision.context.brief, duration = durationInstruction(brief), shortDrama = isShortDrama(brief);
+  const format = `{"cast":[{"id":"C1","name":"剧本中的人名"}],"shots":[{"id":"sh1","sceneId":"s1","firstLine":1,"lastLine":2,"size":"close_up","camera":"static","characters":["C1"],"spoken":[{"line":2,"castId":"C1"}],${shortDrama ? '"screenText":[],' : ''}"durationSeconds":4.5,"composition":"一句话写构图和人物在画面中的位置","sound":"本镜需要的环境声或音效，可省略"}]}`;
   return [
-    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${STORYBOARD_GUIDANCE}${duration ? `\n${duration}` : ''}\n输出格式：${format}。只返回 cast 和 shots。`},
+    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${STORYBOARD_GUIDANCE}${shortDrama ? `\n${SCREEN_TEXT_GUIDANCE}` : ''}${duration ? `\n${duration}` : ''}\n输出格式：${format}。只返回 cast 和 shots。`},
     {role: 'user', content: JSON.stringify({
       task: '把这一版剧本拆成镜头表。', aspectRatio: aspectRatioOf(brief), maxShotSeconds: MAX_SHOT_SECONDS,
       ...(brief.durationTarget ? {durationTarget: brief.durationTarget} : {}), characters: brief.characters,

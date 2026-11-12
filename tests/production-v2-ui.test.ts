@@ -481,3 +481,89 @@ describe('cast, uploads and the batch form', () => {
     expect(html).toContain('<option value="864x480" selected>864×480 · 省算力</option><option value="1344x768" >1344×768 · H3 原生尺寸</option>');
   });
 });
+
+describe('cuts in the production tab', () => {
+  const cut = (overrides: Partial<import('../src/types').Cut> = {}): import('../src/types').Cut => ({id: 'cut-zh', batchId: 'b2', projectId: 'p1', language: 'zh-CN', kind: 'draft', clips: [], captions: [{shotId: 'sh1', start: 1, end: 3, text: `备注 ${attack}`, enabled: true}],
+    settings: {musicAssetId: null, musicLevelDb: -20, dialogueLufs: -16, ambienceLufs: -22, maxGainDb: 9, targetLufs: -14, truePeakDb: -1, fadeMs: 20, size: 'native'},
+    status: 'done', output: {assetId: 'cutvid', sha256: SHA_A, bytes: 16_000_000, seconds: 79.2, loudness: -14, truePeak: -1.3}, warnings: [`没有字体 ${attack}`], createdAt: time, updatedAt: time, ...overrides});
+
+  test('a done draft plays from the media store, warnings are escaped, and a final form waits for approved takes', () => {
+    const {ctx} = fixture({live: false});
+    ctx.bundle.cuts = [cut()];
+    const html = harness(ctx).p.view(ctx);
+    expect(html).toContain('<section class="cut-area"><h3>成片</h3>');
+    expect(html).toContain('<video controls playsinline preload="metadata" src="/api/media/cutvid"');
+    expect(html).toContain('79.2 秒 · 响度 -14 LUFS · 真峰值 -1.3 dBTP');
+    expect(html).toContain(`没有字体 ${escaped}`);
+    expect(html).not.toContain(attack);
+    expect(html).toContain('每个片段都通过一条 take 后，才能剪正式成片');
+    expect(html).toContain('href="/api/cuts/cut-zh/report"');
+    expect(html).toContain('data-production-music-upload');
+  });
+
+  test('the final-cut form reads the plan, keeps edits, and sends music, size and captions', async () => {
+    const {ctx, jobs} = fixture({live: false});
+    for (const job of jobs) { job.takes = [{n: 1, seed: 1, status: 'rendered', video: {assetId: `v-${job.id}`, sha256: SHA_B, bytes: 10, seconds: 12}}]; job.approvedTake = 1; }
+    ctx.bundle.media!.push({id: 'bed', projectId: 'p1', kind: 'music', contentType: 'audio/flac', bytes: 5000, sha256: SHA_B, origin: 'owner', label: `Night bed ${attack}`, license: 'CC BY 4.0', createdAt: time});
+    const plan = {captions: [{shotId: 'sh1', start: 1, end: 3, text: '订单备注', enabled: true}], missing: [], seconds: 72, pictureLanguage: 'en', musicRequired: true,
+      settings: {musicAssetId: null, musicLevelDb: -20, dialogueLufs: -16, ambienceLufs: -22, maxGainDb: 9, targetLufs: -14, truePeakDb: -1, fadeMs: 20, size: 'native'}, sizes: ['native', '720x1280', '1080x1920'], ffmpeg: {found: true}};
+    const {p, calls} = harness(ctx, path => path.includes('/cut-plan') ? plan : path.endsWith('/cuts') ? {cut: cut({kind: 'final', status: 'queued'}), bundle: ctx.bundle} : undefined);
+    expect(p.view(ctx)).toContain('data-action="production-cut-open" data-id="b2" data-language="zh-CN"');
+    p.click('production-cut-open', {dataset: {id: 'b2', language: 'zh-CN'}}, ctx);
+    await flush();
+    expect(calls.apis.at(-1)![0]).toBe('/api/render-batches/b2/cut-plan?language=zh-CN&kind=final');
+    let html = p.view(ctx);
+    expect(html).toContain('<legend>正式成片 · 简体中文</legend>');
+    expect(html).toContain('请选择配乐…');
+    expect(html).toContain(`Night bed ${escaped} · CC BY 4.0`);
+    p.click('production-cut-create', {dataset: {id: 'b2', language: 'zh-CN'}}, ctx);
+    expect(calls.failures.at(-1)).toContain('请选一条配乐');
+    const key = {cutKey: 'b2:zh-CN'};
+    p.input(field({productionCutField: 'music', ...key}, 'bed'));
+    p.input(field({productionCutField: 'musicLevel', ...key}, '-18'));
+    p.input(field({productionCutField: 'size', ...key}, '720x1280'));
+    p.input(field({productionCaption: 'text', ...key, index: '0'}, '订单备注：敲门三次'));
+    p.input(field({productionCaption: 'end', ...key, index: '0'}, '4.5'));
+    html = p.view(ctx);
+    expect(html).toContain('<option value="bed" selected>');
+    expect(html).toContain('订单备注：敲门三次');
+    p.click('production-cut-create', {dataset: {id: 'b2', language: 'zh-CN'}}, ctx);
+    await flush();
+    expect(calls.posts.at(-1)).toEqual(['/api/render-batches/b2/cuts', {language: 'zh-CN', kind: 'final', settings: {size: '720x1280', musicAssetId: 'bed', musicLevelDb: -18}, captions: [{shotId: 'sh1', start: 1, end: 4.5, text: '订单备注：敲门三次', enabled: true}]}]);
+    expect(p.view(ctx)).not.toContain('<legend>正式成片');
+  });
+
+  test('sign-off needs a note to reject, rehearsal cuts cannot be signed, and a queued cut keeps polling', async () => {
+    const {ctx} = fixture({live: false});
+    ctx.bundle.cuts = [cut({id: 'final-zh', kind: 'final'})];
+    const {p, calls, timers} = harness(ctx, path => path.includes('/sign-off') ? {cut: cut({id: 'final-zh', kind: 'final'}), bundle: ctx.bundle} : undefined);
+    let html = p.view(ctx);
+    expect(html).toContain('data-action="production-cut-signoff" data-id="final-zh" data-decision="signed_off"');
+    p.click('production-cut-signoff', {dataset: {id: 'final-zh', decision: 'rejected'}}, ctx);
+    expect(calls.failures.at(-1)).toBe('驳回时请写明原因。');
+    p.input(field({productionCutNote: 'final-zh'}, '字幕太快'));
+    p.click('production-cut-signoff', {dataset: {id: 'final-zh', decision: 'rejected'}}, ctx);
+    await flush();
+    expect(calls.posts.at(-1)).toEqual(['/api/cuts/final-zh/sign-off', {decision: 'rejected', note: '字幕太快'}]);
+    ctx.bundle.cuts = [cut({id: 'final-zh', kind: 'final', rehearsal: true})];
+    html = p.view(ctx);
+    expect(html).toContain('演练成片用的是占位画面，不能签收或交付。');
+    expect(html).not.toContain('data-decision="signed_off"');
+    expect(timers).toHaveLength(0);
+    ctx.bundle.cuts = [cut({status: 'running', output: undefined})];
+    p.view(ctx);
+    expect(timers).toHaveLength(1);
+    expect(timers[0]!.ms).toBeLessThanOrEqual(POLL_MS);
+  });
+
+  test('music uploads carry the license note in the query', async () => {
+    const {ctx} = fixture({live: false});
+    ctx.bundle.cuts = [cut()];
+    const {p, calls} = harness(ctx);
+    p.input(field({productionMusicLicense: ''}, 'CC BY 4.0, Jane'));
+    const file = new File([new Uint8Array([0x66, 0x4c, 0x61, 0x43])], 'bed.flac');
+    p.change({dataset: {productionMusicUpload: ''}, files: [file], value: ''} as unknown as HTMLInputElement, ctx);
+    await flush();
+    expect(calls.uploads.at(-1)![0]).toBe('/api/projects/p1/media?kind=music&label=bed.flac&license=CC%20BY%204.0%2C%20Jane');
+  });
+});

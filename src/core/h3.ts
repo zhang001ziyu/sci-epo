@@ -370,3 +370,26 @@ export function parseRenderResults(value: unknown, batchId: string): {results: R
   }
   return {results, skipped};
 }
+
+/** The spoken lines of a clip in one language, in prompt order: the words inside <d>, with scene and line position. */
+export function spokenLines(clip: RenderClip, list: Pick<ShotList, 'shots'>, language: string): {sceneId: string; position: number; language: string; text: string}[] {
+  const prompt = clip.prompts[language];
+  if (!prompt) return [];
+  const words = [...prompt.text.matchAll(/<d>\[[A-Za-z]+\] ([\s\S]*?)<\/d>/gu)].map(m => m[1]!);
+  const positions = clip.shotIds.flatMap(id => {
+    const shot = list.shots.find(s => s.id === id);
+    return shot ? [...shot.spoken].sort((a, b) => a.line - b.line).map(s => ({sceneId: shot.sceneId, position: s.line})) : [];
+  });
+  return words.map((text, index) => ({sceneId: positions[index]?.sceneId ?? clip.sceneId, position: positions[index]?.position ?? 0, language, text}));
+}
+
+/** Planned start and end of each shot inside its clip; the last shot ends with the clip's frames. */
+export function shotTimes(clip: Pick<RenderClip, 'shotIds' | 'frames'>, list: Pick<ShotList, 'shots'>): {shotId: string; start: number; end: number}[] {
+  const length = clip.frames / H3_FPS, round3 = (value: number) => Math.round(value * 1000) / 1000;
+  let t = 0;
+  return clip.shotIds.map((id, index) => {
+    const start = Math.min(t, length);
+    t += list.shots.find(s => s.id === id)?.durationSeconds ?? 0;
+    return {shotId: id, start: round3(start), end: round3(index === clip.shotIds.length - 1 ? length : Math.min(t, length))};
+  });
+}

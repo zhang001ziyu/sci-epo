@@ -1,13 +1,14 @@
 /** Production tab: the series profile and cast references, render batches with their review and render sessions,
  * and the older ways to reach a worker for version 1 batches.
  * Every displayed value is escaped. Session codes, a new worker token and the worker key stay in this page's memory only. */
-import type { Episode, MediaAsset, ProductionCharacter, ProductionProfile, ProjectBundle, PublicRenderSession, RenderBatch, RenderJob, RenderJobV2, RenderSession, RetakeReason, Revision, ShotList } from '../src/types';
+import type { Caption, Cut, CutSettings, CutSize, Episode, MediaAsset, ProductionCharacter, ProductionProfile, ProjectBundle, PublicRenderSession, RenderBatch, RenderJob, RenderJobV2, RenderSession, RetakeReason, Revision, ShotList } from '../src/types';
+import { CUT_SETTING_RANGES, cutCurrent, cutSelection } from '../src/core/cut';
 import { DEFAULT_CLIP_LIMIT, EMPTY_PROFILE, MIN_CLIP_LIMIT, STYLE_PRESETS, framesToSeconds, outputName } from '../src/core/h3';
 import { languageName, scriptLanguage } from '../src/core/languages';
 import { MEDIA_KINDS, formatBytes } from '../src/core/mediaKinds';
 import { normalizeSpeakerName } from '../src/core/scriptLines';
 import { boundAdaptations, shotListStatus } from '../src/core/shotList';
-import { RETAKE_REASONS, codeOnce, countsView, isLiveSession, jobCell, mediaUrl, referenceChanges, reviewPanel, sessionLive, sessionStart, sessionSummary } from './productionV2';
+import { RETAKE_REASONS, codeOnce, countsView, cutForm, cutSignOff, cutView, isLiveSession, jobCell, mediaUrl, musicUpload, referenceChanges, reviewPanel, sessionLive, sessionStart, sessionSummary, type CutFormDraft } from './productionV2';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]!));
 const date = (value: string) => new Date(value).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
@@ -23,6 +24,8 @@ export const RENDER_SIZES: Record<ShotList['aspectRatio'], {value: string; label
 export const POLL_MS = 5000;
 
 export interface PublicWorkerToken { id: string; label: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
+/** GET /api/render-batches/:id/cut-plan */
+export interface CutPlanAnswer { captions: Caption[]; missing: string[]; seconds: number; pictureLanguage: string; settings: CutSettings; sizes: CutSize[]; musicRequired: boolean; ffmpeg: {found: boolean; hint?: string} }
 export interface PanelTimers { set(fn: () => void, ms: number): unknown; clear(handle: unknown): void }
 export interface ProductionHooks {
   run(label: string, action: () => Promise<void>): Promise<void>;
@@ -95,6 +98,10 @@ export class ProductionPanel {
   private readings = new Map<string, {before?: string; after?: string}>();
   private rate: string | null = null;
   private showMedia = false;
+  /** Open final-cut forms by "batch:language", the sign-off notes by cut and the license note of the next music upload. */
+  private cutForms = new Map<string, CutFormDraft>();
+  private cutNotes = new Map<string, string>();
+  private musicLicense = '';
   private timer: unknown = undefined;
   private polling = false;
   private generation = 0;
@@ -109,6 +116,7 @@ export class ProductionPanel {
     this.stopTimer(); this.generation++; this.polling = false; this.lastPoll = 0; this.pollError = '';
     this.sessions.clear(); this.code = null; this.copied = false; this.review = null; this.reasons.clear(); this.note = '';
     this.sessionDrafts.clear(); this.readings.clear(); this.rate = null; this.showMedia = false;
+    this.cutForms.clear(); this.cutNotes.clear(); this.musicLicense = '';
   }
   get changed(): boolean { return !!this.draft && this.draftFor !== '' && this.dirtyProfile; }
   /** True while a polling timer is waiting to fire. */
@@ -270,7 +278,35 @@ export class ProductionPanel {
       + `${warnings.length ? `<div class="inline-warning"><strong>需要留意</strong><ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}`
       + `${changes.length ? `<div class="inline-warning"><strong>系列的参考已经变了</strong><ul>${changes.map(w => `<li>${esc(w)}</li>`).join('')}</ul><span class="small">要用现在的参考，请生成新的渲染批次。</span></div>` : ''}`
       + `<div class="table-scroll"><table class="production-table jobs-table"><thead><tr><th>片段</th>${batch.languages.map(l => `<th>${esc(languageName(l))}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
-      + `${reviewJob ? reviewPanel({batch, job: reviewJob, ...(this.review?.take !== undefined ? {take: this.review.take} : {}), current, disabled, reasons: this.reasons, note: this.note}) : ''}${this.sessionArea(ctx, batch, jobs, current, disabled)}</article>`;
+      + `${reviewJob ? reviewPanel({batch, job: reviewJob, ...(this.review?.take !== undefined ? {take: this.review.take} : {}), current, disabled, reasons: this.reasons, note: this.note}) : ''}${this.sessionArea(ctx, batch, jobs, current, disabled)}${this.cutArea(ctx, batch, jobs, current, disabled)}</article>`;
+  }
+
+  private cutsOf(ctx: ProductionContext, batchId: string): Cut[] {
+    return (ctx.bundle.cuts ?? []).filter(c => c.batchId === batchId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /** Per language: the final cuts with their sign-off, the newest draft, and the form of a new final cut. */
+  private cutArea(ctx: ProductionContext, batch: RenderBatch, jobs: RenderJobV2[], current: boolean, disabled: string): string {
+    const cuts = this.cutsOf(ctx, batch.id), music = (ctx.bundle.media ?? []).filter(m => m.kind === 'music');
+    if (!cuts.length && !jobs.some(j => j.takes.some(t => t.status === 'rendered'))) return '';
+    const sections = batch.languages.map(language => {
+      const mine = cuts.filter(c => c.language === language), draft = mine.find(c => c.kind === 'draft'), finals = mine.filter(c => c.kind === 'final');
+      const rendered = cutSelection(batch, jobs, language, 'draft'), approved = cutSelection(batch, jobs, language, 'final');
+      const key = `${batch.id}:${language}`, form = this.cutForms.get(key), data = `data-id="${esc(batch.id)}" data-language="${esc(language)}"`;
+      const items = [...finals, ...(draft ? [draft] : [])].map(cut => {
+        const fresh = cutCurrent(cut, jobs);
+        return cutView(cut, {current: fresh, batch}) + cutSignOff(cut, {current: fresh && current, note: this.cutNotes.get(cut.id) ?? '', disabled});
+      }).join('');
+      const waiting = rendered.missing.length ? `<p class="small muted">还有片段没有渲染好的 take：${rendered.missing.map(esc).join('、')}。全部渲染好后，Sci-epo 会自动剪一版草稿。</p>` : '';
+      const redo = !rendered.missing.length && (!draft || draft.status === 'failed' || (draft.status === 'done' && !cutCurrent(draft, jobs)))
+        ? `<button class="button subtle small-button" data-action="production-cut-draft" ${data} ${disabled}>${draft ? '重新剪草稿' : '剪一版草稿'}</button>` : '';
+      const final = !current ? '<span class="small muted">这一批不是当前制作版本，不能剪正式成片。</span>'
+        : approved.missing.length ? `<span class="small muted">每个片段都通过一条 take 后，才能剪正式成片（还差 ${approved.missing.map(esc).join('、')}）。</span>`
+        : form ? '' : `<button class="button small-button" data-action="production-cut-open" ${data} ${disabled}>剪辑正式成片…</button>`;
+      return `<section class="cut-language"><h4>${esc(languageName(language))}</h4>${waiting}${items}<div class="language-toolbar">${redo}${final}</div>${form ? cutForm(batch, language, form, {music, disabled}) : ''}</section>`;
+    }).join('');
+    return `<section class="cut-area"><h3>成片</h3><p class="small muted">草稿用每个片段最新渲染好的 take，供你连着看；正式成片只用你通过的 take，签收后才算交付。剪辑在运行 Sci-epo 的电脑上用 ffmpeg 完成，不花 GPU。</p>`
+      + `${sections}${musicUpload(batch.id, music, this.musicLicense, disabled)}</section>`;
   }
 
   /** Sessions of this episode's v2 batches, preferring the copy this page read last. */
@@ -321,7 +357,10 @@ export class ProductionPanel {
   /** One timer at a time while a session of this episode is live; the next one is set when the view renders again. */
   private schedule(ctx: ProductionContext): void {
     const ids = this.sessionsOf(ctx).filter(isLiveSession).map(s => s.id);
-    if (!ids.length) { this.stopTimer(); return; }
+    // A cut that is queued or being cut also needs the page to refresh, even after every session has ended.
+    const batches = new Set((ctx.bundle.renderBatches ?? []).filter(b => b.episodeId === ctx.episode.id).map(b => b.id));
+    const cutting = (ctx.bundle.cuts ?? []).some(c => batches.has(c.batchId) && (c.status === 'queued' || c.status === 'running'));
+    if (!ids.length && !cutting) { this.stopTimer(); return; }
     if (this.timer !== undefined || this.polling) return;
     const projectId = ctx.bundle.project.id, generation = this.generation, wait = Math.max(0, POLL_MS - (this.now() - this.lastPoll));
     this.timer = this.timers.set(() => { this.timer = undefined; void this.poll(projectId, ids, generation); }, wait);
@@ -380,6 +419,25 @@ export class ProductionPanel {
     }
     if (el.dataset.productionRate !== undefined) { this.rate = el.value; return true; }
     if (el.dataset.productionRetakeNote !== undefined) { this.note = el.value; return true; }
+    if (el.dataset.productionCutField && el.dataset.cutKey) {
+      const form = this.cutForms.get(el.dataset.cutKey);
+      if (!form) return true;
+      const field = el.dataset.productionCutField;
+      if (field === 'music') form.music = el.value;
+      else if (field === 'musicLevel') form.musicLevel = el.value;
+      else if (field === 'size' && form.sizes.includes(el.value as CutSize)) form.settings = {...form.settings, size: el.value as CutSize};
+      return true;
+    }
+    if (el.dataset.productionCaption && el.dataset.cutKey) {
+      const caption = this.cutForms.get(el.dataset.cutKey)?.captions[Number(el.dataset.index)], field = el.dataset.productionCaption;
+      if (!caption) return true;
+      if (field === 'enabled') caption.enabled = (el as HTMLInputElement).checked;
+      else if (field === 'text') caption.text = el.value;
+      else if (field === 'start' || field === 'end') { const value = Number(el.value); if (el.value.trim() !== '' && Number.isFinite(value)) caption[field] = value; }
+      return true;
+    }
+    if (el.dataset.productionCutNote) { this.cutNotes.set(el.dataset.productionCutNote, el.value); return true; }
+    if (el.dataset.productionMusicLicense !== undefined) { this.musicLicense = el.value; return true; }
     if (el.dataset.productionRetakeReason) {
       const reason = el.dataset.productionRetakeReason as RetakeReason;
       if (RETAKE_REASONS.some(([value]) => value === reason)) { if ((el as HTMLInputElement).checked) this.reasons.add(reason); else this.reasons.delete(reason); }
@@ -421,6 +479,21 @@ export class ProductionPanel {
         const {asset} = await this.hooks.upload<{asset: MediaAsset; bundle: ProjectBundle}>(`/api/projects/${encodeURIComponent(projectId)}/media?kind=${kind}&label=${encodeURIComponent(label)}`, file);
         this.setBundle(await this.hooks.post<ProjectBundle>(`/api/projects/${encodeURIComponent(projectId)}/cast`, voice ? {name, voiceSampleAssetId: asset.id} : {name, portraitAssetId: asset.id}));
         this.hooks.notice(voice ? `${name} 的声音样本已上传。之后生成的渲染批次会用它。` : `${name} 的参考图已上传。请对照外貌描述检查；之后生成的渲染批次会用它。`);
+      });
+      return true;
+    }
+    if (el.dataset.productionMusicUpload !== undefined) {
+      const file = (el as HTMLInputElement).files?.[0], rule = MEDIA_KINDS.music;
+      if (!file || !ctx) return true;
+      if (!file.size) { this.hooks.fail('文件是空的。'); return true; }
+      if (file.size > rule.limitBytes) { this.hooks.fail(`${rule.label}不能超过 ${formatBytes(rule.limitBytes)}。`); return true; }
+      const projectId = ctx.bundle.project.id, license = this.musicLicense.trim().slice(0, 300), label = file.name.slice(0, 200);
+      void this.hooks.run('正在上传配乐…', async () => {
+        const answer = await this.hooks.upload<{asset: MediaAsset; bundle: ProjectBundle}>(`/api/projects/${encodeURIComponent(projectId)}/media?kind=music&label=${encodeURIComponent(label)}${license ? `&license=${encodeURIComponent(license)}` : ''}`, file);
+        this.setBundle(answer.bundle);
+        this.musicLicense = '';
+        for (const form of this.cutForms.values()) if (!form.music) form.music = answer.asset.id;
+        this.hooks.notice(license ? '配乐已上传，授权说明会写进交付报告。' : '配乐已上传。它没有授权说明；交付前请确认你有权使用它。');
       });
       return true;
     }
@@ -495,8 +568,57 @@ export class ProductionPanel {
     return this.clickV2(action, el, ctx, id, projectId);
   }
 
+  /** Final-cut forms, drafts and sign-off. */
+  private clickCut(action: string, el: {dataset: DOMStringMap}, id: string): boolean {
+    const language = el.dataset.language ?? '', key = `${id}:${language}`;
+    if (action === 'production-cut-open') {
+      void this.hooks.run('正在读取成片计划…', async () => {
+        const plan = await this.hooks.api<CutPlanAnswer>(`/api/render-batches/${encodeURIComponent(id)}/cut-plan?language=${encodeURIComponent(language)}&kind=final`);
+        this.cutForms.set(key, {settings: {...plan.settings}, captions: plan.captions.map(c => ({...c})), sizes: plan.sizes, seconds: plan.seconds, pictureLanguage: plan.pictureLanguage,
+          musicRequired: plan.musicRequired, music: plan.musicRequired ? '' : 'none', musicLevel: String(plan.settings.musicLevelDb), ffmpeg: plan.ffmpeg});
+      });
+      return true;
+    }
+    if (action === 'production-cut-cancel') { this.cutForms.delete(key); this.hooks.render(); return true; }
+    if (action === 'production-cut-draft') {
+      void this.hooks.run('正在排上草稿…', async () => {
+        this.setBundle((await this.hooks.post<{cut: Cut; bundle: ProjectBundle}>(`/api/render-batches/${encodeURIComponent(id)}/cuts`, {language, kind: 'draft'})).bundle);
+        this.hooks.notice('草稿排上了，剪好后可以直接在这里播放。');
+      });
+      return true;
+    }
+    if (action === 'production-cut-create') {
+      const form = this.cutForms.get(key);
+      if (!form) return true;
+      if (form.musicRequired && !form.music) { this.hooks.fail('请选一条配乐，或选择“不加配乐”。'); return true; }
+      const level = Number(form.musicLevel), [low, high] = CUT_SETTING_RANGES.musicLevelDb;
+      if (form.music && form.music !== 'none' && (form.musicLevel.trim() === '' || !Number.isFinite(level) || level < low || level > high)) { this.hooks.fail(`配乐音量需为 ${low} 到 ${high} dB。`); return true; }
+      const bad = form.captions.find(c => c.enabled && (!c.text.trim() || !(c.end > c.start) || c.start < 0 || c.end > form.seconds + 0.5));
+      if (bad) { this.hooks.fail(`镜头 ${bad.shotId} 的字幕需要文字，并且结束时间晚于开始、不超过 ${form.seconds} 秒；不想显示就把它关掉。`); return true; }
+      const settings = {size: form.settings.size, ...(form.music === 'none' ? {noMusic: true} : form.music ? {musicAssetId: form.music, musicLevelDb: level} : {})};
+      void this.hooks.run('正在排上正式成片…', async () => {
+        const answer = await this.hooks.post<{cut: Cut; bundle: ProjectBundle}>(`/api/render-batches/${encodeURIComponent(id)}/cuts`, {language, kind: 'final', settings, captions: form.captions});
+        this.setBundle(answer.bundle); this.cutForms.delete(key);
+        this.hooks.notice('正式成片排上了。剪好后请看一遍，再决定签收或驳回。');
+      });
+      return true;
+    }
+    if (action === 'production-cut-signoff') {
+      const decision = el.dataset.decision === 'rejected' ? 'rejected' : 'signed_off', note = (this.cutNotes.get(id) ?? '').trim();
+      if (decision === 'rejected' && !note) { this.hooks.fail('驳回时请写明原因。'); return true; }
+      void this.hooks.run(decision === 'signed_off' ? '正在签收…' : '正在记录驳回…', async () => {
+        this.setBundle((await this.hooks.post<{cut: Cut; bundle: ProjectBundle}>(`/api/cuts/${encodeURIComponent(id)}/sign-off`, {decision, ...(note ? {note} : {})})).bundle);
+        this.cutNotes.delete(id);
+        this.hooks.notice(decision === 'signed_off' ? '已签收。交付报告存进了媒体库，发布清单会把这一语言标为已交付。' : '已驳回，原因记在成片上。可以重拍片段或改字幕后再剪一版。');
+      });
+      return true;
+    }
+    return false;
+  }
+
   /** Cast references, media, review and render sessions. */
   private clickV2(action: string, el: {dataset: DOMStringMap}, ctx: ProductionContext, id: string, projectId: string): boolean {
+    if (action.startsWith('production-cut-')) return this.clickCut(action, el, id);
     if (action === 'production-unlink') {
       const voice = el.dataset.kind === 'voice';
       if (!id) return true;

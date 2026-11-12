@@ -1,7 +1,8 @@
 /** Version 2 render batches in the production tab: the job grid, the review of takes and render sessions.
  * Pure view helpers; ProductionPanel owns the state and the requests. Every displayed value is escaped.
  * Elements marked data-live hold no text inputs, so a polling refresh can replace them while the author types. */
-import type { ProductionProfile, PublicRenderSession, QaCheck, RenderBatch, RenderJobV2, RenderSession, RetakeReason, SessionEnd, SessionEvent, Take, TakeQa } from '../src/types';
+import type { Caption, Cut, CutSettings, CutSize, MediaAsset, ProductionProfile, PublicRenderSession, QaCheck, RenderBatch, RenderJobV2, RenderSession, RetakeReason, SessionEnd, SessionEvent, Take, TakeQa } from '../src/types';
+import { CUT_SETTING_RANGES } from '../src/core/cut';
 import { framesToSeconds } from '../src/core/h3';
 import { languageName } from '../src/core/languages';
 import { formatBytes } from '../src/core/mediaKinds';
@@ -238,4 +239,85 @@ export function sessionSummary(s: PublicRenderSession, o: {rate?: number; readin
     + `<div class="language-toolbar readings"><label for="reading-before-${id}">开始前的计算单元余额</label><input id="reading-before-${id}" class="small-input" type="number" min="0" step="0.01" value="${esc(o.readings.before)}" data-production-reading="before" data-id="${id}" ${o.disabled}/>`
     + `<label for="reading-after-${id}">结束后的余额</label><input id="reading-after-${id}" class="small-input" type="number" min="0" step="0.01" value="${esc(o.readings.after)}" data-production-reading="after" data-id="${id}" ${o.disabled}/>`
     + `<button class="button subtle small-button" data-action="production-save-readings" data-id="${id}" ${o.disabled}>保存读数</button></div><p class="small muted">余额在 Colab 的“代码执行程序 → 查看资源”里。</p></div>`;
+}
+
+// ------------------------------------------------------------------ cuts
+
+export const CUT_STATUS: Record<Cut['status'], string> = {queued: '排队中', running: '剪辑中', done: '已剪好', failed: '失败'};
+const CUT_STATUS_CLASS: Record<Cut['status'], string> = {queued: '', running: '', done: 'accepted', failed: 'changed'};
+export const CUT_KIND: Record<Cut['kind'], string> = {draft: '草稿', final: '正式成片'};
+const decibels = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) ? '—' : String(round1(value));
+const sizeLabel = (size: CutSize, batch: Pick<RenderBatch, 'width' | 'height'>) => size === 'native' ? `按渲染尺寸（${batch.width}×${batch.height}）` : size.replace('x', '×');
+
+/** The plan of a final cut as the server returns it, kept while the author edits it. */
+export interface CutFormDraft {
+  settings: CutSettings; captions: Caption[]; sizes: CutSize[]; seconds: number; pictureLanguage: string; musicRequired: boolean;
+  /** '' until the author chooses, 'none' for no music, or a music asset ID. */
+  music: string;
+  /** The music level as typed. */
+  musicLevel: string;
+  ffmpeg: {found: boolean; hint?: string};
+}
+
+/** One cut: status, the player when it is done, facts, warnings and errors. It holds no inputs, so polling can replace it;
+ * the status is in the key, so a finished cut draws the page again with its sign-off controls. */
+export function cutView(cut: Cut, o: {current: boolean; batch: Pick<RenderBatch, 'width' | 'height'>}): string {
+  const out = cut.output, id = esc(cut.id);
+  const verdict = cut.signOff ? `<span class="pill ${cut.signOff.decision === 'signed_off' ? 'accepted' : 'changed'}">${cut.signOff.decision === 'signed_off' ? '已签收' : '已驳回'}</span>` : '';
+  const pills = `<span class="pill ${CUT_STATUS_CLASS[cut.status]}">${esc(CUT_STATUS[cut.status])}</span>${cut.rehearsal ? '<span class="pill demo">演练</span>' : ''}${o.current ? '' : '<span class="pill changed">不是当前版本</span>'}${verdict}`;
+  const settings = [sizeLabel(cut.settings.size, o.batch), cut.settings.musicAssetId ? `配乐 ${decibels(cut.settings.musicLevelDb)} dB` : cut.settings.noMusic ? '不加配乐' : '没有配乐', `字幕 ${cut.captions.filter(c => c.enabled).length} 条`];
+  const facts = out ? [`${out.seconds} 秒`, `响度 ${decibels(out.loudness)} LUFS`, `真峰值 ${decibels(out.truePeak)} dBTP`, size(out.bytes)] : [];
+  const player = cut.status === 'done' && out ? `<video controls playsinline preload="metadata" src="${esc(mediaUrl(out.assetId))}" class="cut-video" aria-label="${esc(CUT_KIND[cut.kind])}视频"></video>` : '';
+  const waiting = cut.status === 'queued' ? '<p class="small muted">排在队里，前面的成片剪完就开始。</p>' : cut.status === 'running' ? '<p class="small muted">正在用 ffmpeg 剪辑，通常一两分钟。</p>' : '';
+  const stale = o.current ? '' : `<p class="small">${cut.kind === 'final' ? '有片段通过了另一条 take，这一版不是当前版本，不能签收。要交付请重新剪正式成片。' : '有片段渲染了更新的 take，这一版草稿不是当前版本。'}</p>`;
+  return `<div class="cut-item" data-live="cut-${id}-${cut.status}"><div class="session-head"><strong>${esc(CUT_KIND[cut.kind])}</strong>${pills}<span class="small muted">${esc(date(cut.createdAt))}</span></div>`
+    + `${player}${facts.length ? `<p class="small">${facts.map(esc).join(' · ')}</p>` : ''}<p class="small muted">${settings.map(esc).join(' · ')}</p>${waiting}${stale}`
+    + `${cut.error ? `<p class="small error-text">${esc(cut.error)}</p>` : ''}${(cut.warnings ?? []).map(w => `<p class="small qa-warning">${esc(w)}</p>`).join('')}`
+    + `${cut.status === 'done' || cut.status === 'failed' ? `<a class="text-button" href="/api/cuts/${encodeURIComponent(cut.id)}/report" download>交付报告 ↗</a>` : ''}</div>`;
+}
+
+/** Sign-off of a finished final cut: the verdict so far, a note and the two decisions. Outside the polled region. */
+export function cutSignOff(cut: Cut, o: {current: boolean; note: string; disabled: string}): string {
+  if (cut.kind !== 'final' || cut.status !== 'done') return '';
+  if (cut.rehearsal) return '<p class="small muted">演练成片用的是占位画面，不能签收或交付。</p>';
+  const id = esc(cut.id), s = cut.signOff;
+  const decided = s ? `<p class="small">${s.decision === 'signed_off' ? '你已签收' : '你已驳回'}（${esc(date(s.at))}）${s.note ? `：${esc(s.note)}` : ''}</p>` : '';
+  return `<div class="cut-signoff">${decided}<label class="field-label" for="cut-note-${id}">说明（驳回时必填）</label><textarea id="cut-note-${id}" rows="2" maxlength="1000" data-production-cut-note="${id}" placeholder="例如：第 3 段的消息字幕太快。" ${o.disabled}>${esc(o.note)}</textarea>`
+    + `<div class="language-toolbar"><button class="button primary small-button" data-action="production-cut-signoff" data-id="${id}" data-decision="signed_off" ${o.disabled || (o.current ? '' : 'disabled')}>内容成立，签收</button>`
+    + `<button class="button subtle small-button" data-action="production-cut-signoff" data-id="${id}" data-decision="rejected" ${o.disabled}>驳回</button>`
+    + `<span class="small muted">签收是你对内容的结论，和上面的技术结果分开记录；签收后交付报告存进媒体库，发布清单把这一语言标为已交付。</span></div></div>`;
+}
+
+/** The form of a final cut: music, its level, the output size and the captions of on-screen text. */
+export function cutForm(batch: Pick<RenderBatch, 'id' | 'width' | 'height'>, language: string, draft: CutFormDraft, o: {music: MediaAsset[]; disabled: string}): string {
+  const key = esc(`${batch.id}:${language}`), field = (name: string) => `data-production-cut-field="${name}" data-cut-key="${key}"`;
+  const [low, high] = CUT_SETTING_RANGES.musicLevelDb;
+  const options = [...(draft.musicRequired ? [['', '请选择配乐…'] as const] : []), ...o.music.map(m => [m.id, `${m.label ?? m.id}${m.license ? ` · ${m.license}` : ' · 没有授权说明'}`] as const), ['none', '不加配乐'] as const];
+  const music = `<label for="cut-music-${key}">配乐</label><select id="cut-music-${key}" ${field('music')} ${o.disabled}>${options.map(([value, label]) => `<option value="${esc(value)}" ${draft.music === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>`
+    + `<label for="cut-level-${key}">配乐音量（dB）</label><input id="cut-level-${key}" class="small-input" type="number" min="${low}" max="${high}" step="1" value="${esc(draft.musicLevel)}" ${field('musicLevel')} ${o.disabled}/>`;
+  const sizes = `<label for="cut-size-${key}">输出尺寸</label><select id="cut-size-${key}" ${field('size')} ${o.disabled}>${draft.sizes.map(s => `<option value="${esc(s)}" ${draft.settings.size === s ? 'selected' : ''}>${esc(sizeLabel(s, batch))}</option>`).join('')}</select>`;
+  const caption = (c: Caption, i: number) => {
+    const attrs = (name: string) => `data-production-caption="${name}" data-cut-key="${key}" data-index="${i}"`;
+    return `<tr><th scope="row">${esc(c.shotId)}</th><td><input type="checkbox" ${attrs('enabled')} ${c.enabled ? 'checked' : ''} aria-label="显示镜头 ${esc(c.shotId)} 的字幕" ${o.disabled}/></td>`
+      + `<td><textarea rows="2" maxlength="300" ${attrs('text')} aria-label="镜头 ${esc(c.shotId)} 的字幕文字" ${o.disabled}>${esc(c.text)}</textarea></td>`
+      + `<td><input class="small-input" type="number" min="0" max="${esc(draft.seconds)}" step="0.1" value="${esc(c.start)}" ${attrs('start')} aria-label="镜头 ${esc(c.shotId)} 的字幕开始" ${o.disabled}/></td>`
+      + `<td><input class="small-input" type="number" min="0" max="${esc(draft.seconds)}" step="0.1" value="${esc(c.end)}" ${attrs('end')} aria-label="镜头 ${esc(c.shotId)} 的字幕结束" ${o.disabled}/></td></tr>`;
+  };
+  const captions = draft.captions.length
+    ? `<div class="table-scroll"><table class="production-table caption-table"><thead><tr><th>镜头</th><th>显示</th><th>文字</th><th>开始（秒）</th><th>结束（秒）</th></tr></thead><tbody>${draft.captions.map(caption).join('')}</tbody></table></div>`
+      + `<p class="small muted">字幕取自剧本或改编里这些行引号中的文字，按镜头的时间显示，可以改字、缩短、挪时间或关掉。${esc(languageName(draft.pictureLanguage))}是画面描述用的语言，观众能直接读画面上的字，所以它的字幕默认关闭。</p>`
+    : '<p class="small muted">分镜表里没有标出画面文字的行，这一版没有字幕。可以在分镜页的镜头里勾选“画面文字”。</p>';
+  return `<fieldset class="cut-form"><legend>正式成片 · ${esc(languageName(language))}</legend>${draft.ffmpeg.found ? '' : `<div class="inline-warning" role="status">${esc(draft.ffmpeg.hint ?? '')}</div>`}`
+    + `<div class="language-toolbar">${music}${sizes}</div>${draft.musicRequired ? '<p class="small muted">这一批用整集配乐：片段里没有背景音乐，正式成片要选一条配乐，或明确选择不加配乐。配乐在对白下自动压低，开头淡入 1 秒、结尾淡出 2 秒。</p>' : ''}`
+    + `<h4>画面文字字幕</h4>${captions}<div class="language-toolbar"><button class="button primary small-button" data-action="production-cut-create" data-id="${esc(batch.id)}" data-language="${esc(language)}" ${o.disabled || (draft.ffmpeg.found ? '' : 'disabled')}>开始剪辑正式成片</button>`
+    + `<button class="text-button" data-action="production-cut-cancel" data-id="${esc(batch.id)}" data-language="${esc(language)}" ${o.disabled}>取消</button></div></fieldset>`;
+}
+
+/** Music in the media store and the upload with its license note; the note goes into the delivery report. */
+export function musicUpload(batchId: string, music: MediaAsset[], license: string, disabled: string): string {
+  const id = esc(batchId);
+  const list = music.length ? `<ul class="media-list">${music.map(m => `<li><span><strong>${esc(m.label ?? m.id)}</strong> · ${esc(size(m.bytes))}${m.license ? ` · ${esc(m.license)}` : ' · <span class="muted">没有授权说明</span>'}</span></li>`).join('')}</ul>` : '<p class="small muted">还没有上传配乐。</p>';
+  return `<div class="cut-music"><h4>配乐</h4>${list}<div class="language-toolbar"><label for="music-license-${id}">授权说明</label><input id="music-license-${id}" data-production-music-license value="${esc(license)}" maxlength="300" placeholder="例如：CC BY 4.0，作者某某；或我自己创作" ${disabled}/>`
+    + `<label class="button subtle small-button file-button">上传配乐<input type="file" accept="audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/mp4,.wav,.mp3,.flac,.m4a" data-production-music-upload aria-label="上传配乐" ${disabled}/></label></div>`
+    + '<p class="small muted">WAV、MP3、FLAC 或 M4A，不超过 30 MB。配乐的版权由你负责；授权说明会写进交付报告。</p></div>';
 }

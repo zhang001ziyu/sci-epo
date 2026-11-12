@@ -67,7 +67,60 @@ export function isLineAligned(source: {scenes: Pick<Scene, 'id' | 'content'>[]},
 /** Fast speaking rates, so the result is a lower bound on the time the lines need. */
 export const SPEECH_RATES = {wordsPerSecond: 3, charactersPerSecond: 5} as const;
 const CHARACTER_LANGUAGES = /^(zh|ja|ko)(-|$)/u;
+/** Chinese, Japanese and Korean are counted and wrapped by character rather than by word. */
+export const isCharacterLanguage = (language: string): boolean => CHARACTER_LANGUAGES.test(language);
 export const spokenText = (line: string): string => inlineLabel(line)?.text ?? line.trim();
+
+// Quotes that mark visible text: “…”, "…", 「…」 and 『…』 anywhere; '…' and ‘…’ only right after a colon
+// (NOTE: 'Back in five'), so the apostrophe in don't never opens a quote.
+const PAIRED_QUOTES: Record<string, string> = {'“': '”', '"': '"', '「': '」', '『': '』'};
+const SINGLE_QUOTES: Record<string, string> = {"'": "'", '‘': '’'};
+const AFTER_COLON = /[:：]\s*$/u;
+const WORD_CHARACTER = /[\p{L}\p{N}]/u;
+
+/** The quoted parts of a line, in order. An unclosed quote runs to the end of the line. */
+export function quotedParts(line: string): string[] {
+  const parts: string[] = [];
+  let from = 0;
+  while (from < line.length) {
+    let open = -1, close = '';
+    for (let i = from; i < line.length; i++) {
+      const c = line[i]!;
+      if (PAIRED_QUOTES[c] !== undefined) { open = i; close = PAIRED_QUOTES[c]; break; }
+      if (SINGLE_QUOTES[c] !== undefined && AFTER_COLON.test(line.slice(0, i))) { open = i; close = SINGLE_QUOTES[c]; break; }
+    }
+    if (open < 0) break;
+    let end = -1;
+    for (let i = open + 1; i < line.length; i++) {
+      if (line[i] !== close) continue;
+      // A single quote followed by a letter is an apostrophe inside the quote: 'Don't touch it.'
+      if ((close === "'" || close === '’') && WORD_CHARACTER.test(line[i + 1] ?? '')) continue;
+      end = i;
+      break;
+    }
+    const text = line.slice(open + 1, end < 0 ? line.length : end).trim();
+    if (text) parts.push(text);
+    if (end < 0) break;
+    from = end + 1;
+  }
+  return parts;
+}
+
+/** The on-screen text of a line: its quoted parts, one per line, or the line without a speaker label when it has no quote. */
+export function screenTextOf(line: string): string {
+  const parts = quotedParts(line);
+  return parts.length ? parts.join('\n') : spokenText(line);
+}
+
+/** Reading speeds for on-screen text in characters per second, as subtitle guides set them for adult viewers. */
+export const READING_SPEEDS = {latin: 17, cjk: 9} as const;
+export interface ReadingSpeeds { latin: number; cjk: number }
+/** Characters a viewer reads, with every run of whitespace counted as one space. */
+export const readingCharacters = (text: string): number => [...text.replace(/\s+/gu, ' ').trim()].length;
+export function readingSeconds(texts: string[], language: string, speeds: ReadingSpeeds = READING_SPEEDS): number {
+  const count = texts.reduce((sum, text) => sum + readingCharacters(text), 0);
+  return count / (isCharacterLanguage(language) ? speeds.cjk : speeds.latin);
+}
 
 export function minimumSpeechSeconds(lines: string[], language: string): number {
   const text = lines.map(spokenText).join(' ');

@@ -4,7 +4,7 @@
 import { CAMERA_MOVES, SHOT_SIZES, type CastMember, type Episode, type Localization, type Revision, type Scene, type Shot, type ShotList, type ShotListContent } from '../types';
 import { MAX_SHOT_SECONDS } from './formats';
 import { languageName, scriptLanguage } from './languages';
-import { dialoguePositions, isLineAligned, minimumSpeechSeconds, normalizeSpeakerName, scriptLines } from './scriptLines';
+import { READING_SPEEDS, dialoguePositions, isLineAligned, minimumSpeechSeconds, normalizeSpeakerName, quotedParts, readingCharacters, readingSeconds, screenTextOf, scriptLines, type ReadingSpeeds } from './scriptLines';
 
 export class ShotListError extends Error { override name = 'ShotListError'; }
 const reject = (message: string): never => { throw new ShotListError(message); };
@@ -48,8 +48,31 @@ function parseShot(item: unknown, index: number, counts: Map<string, number>, ca
   const duration = shot.durationSeconds;
   if (typeof duration !== 'number' || !Number.isFinite(duration) || duration > 600 || round(duration) <= 0) return reject(`镜头 ${id} 的预计时长需在 0.1–600 秒之间。`);
   const composition = note(shot.composition, `镜头 ${id} 的构图说明`), sound = note(shot.sound, `镜头 ${id} 的声音说明`);
+  const screenText = screenTextMarks(shot.screenText, id, firstLine, lastLine);
   return {id, sceneId, firstLine, lastLine, size: shot.size as Shot['size'], camera: shot.camera as Shot['camera'], characters: [...characters] as string[], spoken,
-    durationSeconds: round(duration), ...(composition ? {composition} : {}), ...(sound ? {sound} : {})};
+    durationSeconds: round(duration), ...(composition ? {composition} : {}), ...(sound ? {sound} : {}), ...(screenText ? {screenText} : {})};
+}
+
+/** Line positions inside the shot that carry on-screen text: unique, at most 20, sorted. Absent stays absent. */
+function screenTextMarks(value: unknown, id: string, firstLine: number, lastLine: number): number[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 20) return reject(`镜头 ${id} 的画面文字标注需为不超过 20 个行号的列表。`);
+  const seen = new Set<number>();
+  for (const line of value) {
+    if (typeof line !== 'number' || !Number.isSafeInteger(line) || line < firstLine || line > lastLine) return reject(`镜头 ${id} 标注的画面文字行 ${String(line)} 不在本镜第 ${firstLine}–${lastLine} 行之内。`);
+    if (seen.has(line)) return reject(`镜头 ${id} 的第 ${line} 行重复标注了画面文字。`);
+    seen.add(line);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
+/** Positions of a shot's lines that carry on-screen text: the marked ones, or, for a shot without the field,
+ * its non-dialogue lines with quoted text. sceneLines are the scene's lines in the script language. */
+export function screenTextLines(shot: Pick<Shot, 'firstLine' | 'lastLine' | 'spoken' | 'screenText'>, sceneLines: string[]): number[] {
+  if (shot.screenText) return shot.screenText.filter(p => p >= shot.firstLine && p <= shot.lastLine).sort((a, b) => a - b);
+  const spoken = new Set(shot.spoken.map(s => s.line)), positions: number[] = [];
+  for (let position = shot.firstLine; position <= shot.lastLine; position++) if (!spoken.has(position) && quotedParts(sceneLines[position - 1] ?? '').length) positions.push(position);
+  return positions;
 }
 
 function requireCoverage(shots: Shot[], scenes: Pick<Scene, 'id'>[], counts: Map<string, number>): void {
@@ -150,14 +173,16 @@ export function shotTexts(list: Pick<ShotList, 'shots'>, revision: Pick<Revision
 
 export const totalDuration = (list: Pick<ShotList, 'shots'>): number => round(list.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0));
 
-export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest';
+export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
 export interface ShotWarning { kind: ShotWarningKind; message: string; shotId?: string; language?: string }
-export interface ShotListContext { revision: Revision; adaptations: Record<string, Pick<Localization, 'id' | 'scenes'>>; newest?: Record<string, string> }
+/** readingSpeed overrides READING_SPEEDS, in characters per second. */
+export interface ShotListContext { revision: Revision; adaptations: Record<string, Pick<Localization, 'id' | 'scenes'>>; newest?: Record<string, string>; readingSpeed?: ReadingSpeeds }
 
 /** Advisory checks only: they never block saving, adoption or export. */
 export function shotListWarnings(list: Pick<ShotList, 'cast' | 'shots' | 'voiceLanguages'>, context: ShotListContext): ShotWarning[] {
   const {revision, adaptations} = context, source = scriptLanguage(revision), warnings: ShotWarning[] = [];
   const names = new Map(list.cast.map(c => [c.id, c.name])), languages = [source, ...Object.keys(adaptations)];
+  const sceneLines = new Map(revision.scenes.map(s => [s.id, scriptLines(s.content)])), speeds = context.readingSpeed ?? READING_SPEEDS;
   for (const {shot, lines} of shotTexts(list, revision, adaptations)) {
     if (shot.durationSeconds > MAX_SHOT_SECONDS) warnings.push({kind: 'too_long', shotId: shot.id, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，超过单次视频生成的 ${MAX_SHOT_SECONDS} 秒。`});
     const spoken = new Set(shot.spoken.map(s => s.line));
@@ -165,6 +190,12 @@ export function shotListWarnings(list: Pick<ShotList, 'cast' | 'shots' | 'voiceL
       const texts = lines.filter(l => spoken.has(l.position)).map(l => l.texts[language] ?? '').filter(Boolean);
       const minimum = minimumSpeechSeconds(texts, language);
       if (texts.length && shot.durationSeconds < minimum) warnings.push({kind: 'too_short_for_speech', shotId: shot.id, language, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，${languageName(language)} 台词至少约需 ${minimum} 秒。`});
+    }
+    const screen = screenTextLines(shot, sceneLines.get(shot.sceneId) ?? []);
+    if (screen.length) for (const language of languages) {
+      const texts = screen.map(position => screenTextOf(lines.find(l => l.position === position)?.texts[language] ?? '')).filter(Boolean);
+      const seconds = readingSeconds(texts, language, speeds), characters = texts.reduce((sum, text) => sum + readingCharacters(text), 0);
+      if (seconds > shot.durationSeconds) warnings.push({kind: 'screen_text_unreadable', shotId: shot.id, language, message: `镜头 ${shot.id} 的画面文字（${languageName(language)}）有 ${characters} 个字符，约需 ${Math.ceil(seconds * 10) / 10} 秒读完，镜头只有 ${shot.durationSeconds} 秒。可以缩短文字，或延长这个镜头。`});
     }
     const speakers = new Set(shot.spoken.map(s => s.castId));
     if (speakers.size > 1) warnings.push({kind: 'multiple_speakers', shotId: shot.id, message: `镜头 ${shot.id} 有 ${speakers.size} 人说话，视频模型可能把台词安到别人嘴上；可考虑拆成正反打。`});
@@ -223,8 +254,11 @@ export function splitShot(content: ShotListContent, shotId: string, atLine: numb
   if (!shot || !Number.isSafeInteger(atLine) || atLine <= shot.firstLine || atLine > shot.lastLine) return reject(`镜头 ${shotId} 不能从第 ${atLine} 行拆开。`);
   const share = (atLine - shot.firstLine) / (shot.lastLine - shot.firstLine + 1);
   const firstDuration = Math.max(0.5, round(shot.durationSeconds * share)), secondDuration = Math.max(0.5, round(shot.durationSeconds - firstDuration));
-  const first: Shot = {...structuredClone(shot), lastLine: atLine - 1, spoken: shot.spoken.filter(s => s.line < atLine).map(s => ({...s})), durationSeconds: firstDuration};
-  const second: Shot = {...structuredClone(shot), id: nextShotId(content.shots), firstLine: atLine, spoken: shot.spoken.filter(s => s.line >= atLine).map(s => ({...s})), durationSeconds: secondDuration};
+  // On-screen text marks follow their lines; a shot without marks stays without them.
+  const first: Shot = {...structuredClone(shot), lastLine: atLine - 1, spoken: shot.spoken.filter(s => s.line < atLine).map(s => ({...s})), durationSeconds: firstDuration,
+    ...(shot.screenText ? {screenText: shot.screenText.filter(line => line < atLine)} : {})};
+  const second: Shot = {...structuredClone(shot), id: nextShotId(content.shots), firstLine: atLine, spoken: shot.spoken.filter(s => s.line >= atLine).map(s => ({...s})), durationSeconds: secondDuration,
+    ...(shot.screenText ? {screenText: shot.screenText.filter(line => line >= atLine)} : {})};
   return {cast: structuredClone(content.cast), shots: [...content.shots.slice(0, index), first, second, ...content.shots.slice(index + 1)].map(s => structuredClone(s))};
 }
 
@@ -234,10 +268,12 @@ export function mergeWithNext(content: ShotListContent, shotId: string): ShotLis
   if (!shot || !next || next.sceneId !== shot.sceneId) return reject(`镜头 ${shotId} 后面没有同一场的镜头可以合并。`);
   const join = (a?: string, b?: string) => [...new Set([a, b].filter((v): v is string => !!v))].join(' / ').slice(0, 500) || undefined;
   const composition = join(shot.composition, next.composition), sound = join(shot.sound, next.sound);
-  const {composition: _c, sound: _s, ...rest} = structuredClone(shot);
+  // Marks of either shot carry over; when neither has marks, the merged shot keeps the quoted-text fallback.
+  const screenText = shot.screenText || next.screenText ? [...new Set([...shot.screenText ?? [], ...next.screenText ?? []])].sort((a, b) => a - b).slice(0, 20) : undefined;
+  const {composition: _c, sound: _s, screenText: _t, ...rest} = structuredClone(shot);
   const merged: Shot = {...rest, lastLine: next.lastLine, characters: [...new Set([...shot.characters, ...next.characters])].slice(0, 10),
     spoken: [...shot.spoken, ...next.spoken].map(s => ({...s})), durationSeconds: Math.min(600, round(shot.durationSeconds + next.durationSeconds)),
-    ...(composition ? {composition} : {}), ...(sound ? {sound} : {})};
+    ...(composition ? {composition} : {}), ...(sound ? {sound} : {}), ...(screenText ? {screenText} : {})};
   return {cast: structuredClone(content.cast), shots: [...content.shots.slice(0, index), merged, ...content.shots.slice(index + 2)].map(s => structuredClone(s))};
 }
 
@@ -254,11 +290,14 @@ export function exportShotListCsv(input: {list: ShotList; revision: Revision; ad
   const languages = [scriptLanguage(revision), ...Object.keys(adaptations)], names = new Map(list.cast.map(c => [c.id, c.name]));
   const production = status.current ? 'current' : status.adopted ? 'adopted_not_current' : 'not_adopted';
   const bound = Object.entries(list.adaptations).map(([language, id]) => `${language}:${id}`).join('; ');
-  const header = ['episode', 'shot_list_version', 'source_revision', 'adaptations', 'production_status', 'aspect_ratio', 'order', 'shot_id', 'scene_id', 'lines', 'size', 'camera', 'characters', 'speakers', ...languages.map(l => `text_${l}`), 'est_seconds', 'duration_basis', 'composition', 'sound'];
+  const header = ['episode', 'shot_list_version', 'source_revision', 'adaptations', 'production_status', 'aspect_ratio', 'order', 'shot_id', 'scene_id', 'lines', 'size', 'camera', 'characters', 'speakers', ...languages.map(l => `text_${l}`), 'est_seconds', 'duration_basis', 'composition', 'sound', 'screen_text'];
+  const sceneLines = new Map(revision.scenes.map(s => [s.id, scriptLines(s.content)]));
   const rows = shotTexts(list, revision, adaptations).map(({shot, order, lines}) => [
     episodeTitle, list.id, list.sourceRevisionId, bound, production, list.aspectRatio, order, shot.id, shot.sceneId, `${shot.firstLine}-${shot.lastLine}`, shot.size, shot.camera,
     shot.characters.map(id => names.get(id) ?? id).join('; '), [...new Set(shot.spoken.map(s => names.get(s.castId) ?? s.castId))].join('; '),
     ...languages.map(language => lines.map(line => line.texts[language] ?? '').join('\n')), shot.durationSeconds, 'estimate', shot.composition ?? '', shot.sound ?? '',
+    // Line positions with on-screen text: the marks, or the quoted-text fallback that captions and warnings also use.
+    screenTextLines(shot, sceneLines.get(shot.sceneId) ?? []).join('; '),
   ]);
   return '\uFEFF' + [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
