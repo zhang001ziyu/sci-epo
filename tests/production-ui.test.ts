@@ -27,7 +27,7 @@ function fixture(options: {adopted?: boolean; batch?: boolean} = {}) {
 function panel(tokens: PublicWorkerToken[] = []) {
   const calls: {posts: [string, unknown][]; notices: string[]; failures: string[]} = {posts: [], notices: [], failures: []};
   const p = new ProductionPanel({run: async (_label, action) => { await action(); }, api: async <T>() => tokens as T, post: async <T>(path: string, body: unknown) => { calls.posts.push([path, body]); return ({token: 'sciepo_wk_once', tokens: [{id: 't1', label: 'Colab', createdAt: time}]}) as T; },
-    setBundle: () => {}, render: () => {}, notice: m => { calls.notices.push(m); }, fail: m => { calls.failures.push(m); }, origin: () => 'https://studio.example.com'});
+    upload: async <T>() => ({}) as T, setBundle: () => {}, render: () => {}, notice: m => { calls.notices.push(m); }, fail: m => { calls.failures.push(m); }, origin: () => 'https://studio.example.com'});
   return {p, calls};
 }
 

@@ -199,6 +199,29 @@ describe('render sessions', () => {
     expect(h.store.get('render_sessions', session.id)!.status).toBe('rendering');
   });
 
+  test('the estimate is available before a session, and equal bytes from two sessions are two records', async () => {
+    const h = harness(), {p, batch} = await h.ready();
+    const estimate = await h.call(`/api/render-batches/${batch.id}/estimate`);
+    expect(estimate.body.pull).toMatchObject({setupMinutes: 4, measured: false});
+    expect(estimate.body.pull.takes).toBeGreaterThan(0);
+    expect(estimate.body.rehearsal.setupMinutes).toBe(0.5);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const {code} = await h.session(p.project.id, batch.id);
+      const take = (await h.worker(code, 'session/claim', {})).body.take;
+      const video = await h.worker(code, `takes/${take.jobId}/${take.n}/files/video`, undefined, {method: 'PUT', raw: mp4(9)});
+      ids.push(video.body.assetId);
+      expect((await h.worker(code, `takes/${take.jobId}/${take.n}/result`, {status: 'rendered', files: {video: video.body.assetId}})).status).toBe(200);
+      await h.worker(code, 'session/end', {reason: 'stopped'});
+    }
+    expect(new Set(ids).size).toBe(2);
+    const lost = await h.session(p.project.id, batch.id);
+    await h.worker(lost.code, 'session/claim', {});
+    h.tick(5);
+    expect((await h.call(`/api/projects/${p.project.id}`)).body.renderSessions.find((s: PublicRenderSession) => s.id === lost.session.id).status).toBe('lost');
+    expect((await h.call(`/api/render-sessions/${lost.session.id}/stop`, {when: 'now'})).body).toMatchObject({status: 'ended', end: 'lost', summary: {undelivered: 1}});
+  });
+
   test('a waiting session can reissue its code or stop at once, and it expires', async () => {
     const h = harness(), {p, batch} = await h.ready(), {session, code} = await h.session(p.project.id, batch.id, {expiresHours: 1});
     const reissued = await h.call(`/api/render-sessions/${session.id}/code`, {});

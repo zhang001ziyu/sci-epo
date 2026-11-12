@@ -191,7 +191,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   if(method==='GET'&&a==='status'){const live=providers.managed?providers.managed.ready():!!providers.live;return {mode:live?'live':'unconfigured',modelLabel:live?'创作模型配置已加载':'尚未配置真实模型',...(providers.managed?{management:true}:{})};}
   if(method==='GET'&&a==='providers'&&!target)return providers.managed?.catalog()??fail(503,'模型管理尚未启用。');
   if(method==='GET'&&a==='projects'&&!target)return store.all('projects');
-  if(method==='GET'&&a==='projects'&&target)return store.bundle(project(target).id);
+  if(method==='GET'&&a==='projects'&&target){const p=project(target);sessions.refreshProject(p.id);return store.bundle(p.id);}
   if(method==='GET'&&a==='revisions'&&target&&action==='export'){
    // The manuscript in the requested language: the source itself, or the current adaptation of this exact revision.
    const r=revision(target),requested=url.searchParams.get('language'),language=requested===null?scriptLanguage(r):validLanguage(requested);

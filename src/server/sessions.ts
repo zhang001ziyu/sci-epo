@@ -88,6 +88,12 @@ export class Sessions {
 
   get(a: string | undefined, target: string | undefined, action: string | undefined): unknown | undefined {
     if (a === 'render-sessions' && target && !action) return publicSession(this.refresh(this.session(target)));
+    // The estimate before a session starts, for a GPU session and for a rehearsal.
+    if (a === 'render-batches' && target && action === 'estimate') {
+      const batch = this.store.get('render_batches', target) ?? this.fail(404, '找不到渲染批次。');
+      if (batch.version !== 2) this.fail(409, '旧版批次没有会话估算。');
+      return {pull: this.estimate([batch], 'pull'), rehearsal: this.estimate([batch], 'rehearsal')};
+    }
     return undefined;
   }
 
@@ -108,6 +114,9 @@ export class Sessions {
       if (this.store.get('episodes', batch.episodeId)?.projectId !== project.id) this.fail(400, '这个批次不属于这个系列。');
       if (batch.version !== 2) this.fail(409, '旧版批次请用任务包或工作机令牌渲染。');
       if (!this.production.current(batch)) this.fail(409, '只有当前制作版本的批次才能渲染。');
+      const stack = this.stacks.get(batch.preset!.stack.id);
+      if (!stack) this.fail(409, `服务器上没有这一批用的工作机栈 ${batch.preset!.stack.id}。`);
+      if (stack!.version !== batch.preset!.stack.version) this.fail(409, `这一批用的工作机栈版本 ${batch.preset!.stack.version} 已更新为 ${stack!.version}，请重新生成渲染任务。`);
       return batch;
     });
     const mode = body.mode === 'rehearsal' ? 'rehearsal' as const : body.mode === undefined || body.mode === 'pull' ? 'pull' as const : this.fail(400, '会话方式只能是 pull 或 rehearsal。');
@@ -136,9 +145,17 @@ export class Sessions {
   private stop(id: string, body: Body) {
     const session = this.refresh(this.session(id)), when = body.when === 'now' ? 'now' as const : 'after_take' as const;
     if (!LIVE.has(session.status)) this.fail(409, '这个会话已经结束。');
-    if (session.status === 'waiting') {
-      const ended: RenderSession = {...session, status: 'ended', end: 'stopped', endedAt: this.now(), tokenHash: null, summary: {minutes: 0, takesRendered: 0, takesFailed: 0, undelivered: 0}};
-      this.store.update('render_sessions', ended);
+    // Nobody is listening to a waiting session, or to a lost one when the author stops it at once: end it here.
+    if (session.status === 'waiting' || (session.status === 'lost' && when === 'now')) {
+      const endedAt = this.now(), minutes = session.startedAt ? round1((this.nowMs() - Date.parse(session.startedAt)) / 60_000) : 0;
+      let undelivered = 0;
+      const ended: RenderSession = {...session, status: 'ended', end: session.status === 'lost' ? 'lost' : 'stopped', endedAt, tokenHash: null, summary: {minutes, takesRendered: 0, takesFailed: 0, undelivered: 0}};
+      this.store.db.transaction(() => {
+        undelivered = this.releaseTakes(session.id);
+        const takes = this.jobs(session.batchIds).flatMap(j => j.takes).filter(t => t.sessionId === session.id);
+        ended.summary = {minutes, takesRendered: takes.filter(t => t.status === 'rendered').length, takesFailed: takes.filter(t => t.status === 'failed').length, undelivered};
+        this.store.update('render_sessions', ended);
+      })();
       return publicSession(ended);
     }
     const next: RenderSession = {...session, stopRequest: {when, at: this.now()}};
@@ -155,6 +172,11 @@ export class Sessions {
     const next = {...session, readings};
     this.store.update('render_sessions', next);
     return publicSession(next);
+  }
+
+  /** Refresh every live session of a project, so the project bundle shows lost and expired sessions as they are. */
+  refreshProject(projectId: string): void {
+    for (const session of this.store.all('render_sessions')) if (session.projectId === projectId && LIVE.has(session.status)) this.refresh(session);
   }
 
   /** Expiry and loss are noticed when a session is read. A lost worker that comes back resumes the session. */

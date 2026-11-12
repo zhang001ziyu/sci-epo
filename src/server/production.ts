@@ -214,8 +214,9 @@ export class Production {
     const job = this.jobV2(jobId), batch = this.batch(job.batchId), last = job.takes.at(-1)!;
     if (!this.current(batch)) this.fail(409, '这个批次已不是当前制作版本，不能再重拍。');
     if (last.status === 'queued' || last.status === 'claimed') this.fail(409, '这个片段已经在排队或正在渲染。');
-    const reasons = Array.isArray(body.reasons) && body.reasons.every(r => RETAKE_REASONS.includes(r as RetakeReason)) ? [...new Set(body.reasons as RetakeReason[])] : this.fail(400, '重拍原因无效。');
-    if (!reasons.length) this.fail(400, '请至少选一个重拍原因。');
+    const reasons = body.reasons === undefined ? [] : Array.isArray(body.reasons) && body.reasons.every(r => RETAKE_REASONS.includes(r as RetakeReason)) ? [...new Set(body.reasons as RetakeReason[])] : this.fail(400, '重拍原因无效。');
+    // A rendered take needs the reason it is rejected; a failed one is simply tried again with the next seed.
+    if (!reasons.length && last.status === 'rendered') this.fail(400, '请至少选一个重拍原因。');
     const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
     const clip = batch.clips.find(c => c.id === job.clipId), at = this.now(), n = last.n + 1;
     const takes: Take[] = job.takes.map(t => t.n === last.n && t.status === 'rendered' ? {...t, verdict: {decision: 'retake', reasons, ...(note ? {note} : {}), at}} : t);

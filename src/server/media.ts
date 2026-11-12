@@ -65,7 +65,9 @@ export class MediaStore {
       mkdirSync(join(this.dir, sha256.slice(0, 2)), {recursive: true});
       renameSync(tmp, target);
     }
-    const existing = this.store.all('media_assets').find(a => a.projectId === projectId && a.sha256 === sha256 && a.kind === kind);
+    // One record per project, kind, origin and session: a worker's upload must belong to its own session even when the
+    // bytes match an earlier file. The file on disk is still stored once.
+    const existing = this.store.all('media_assets').find(a => a.projectId === projectId && a.sha256 === sha256 && a.kind === kind && a.origin === options.origin && a.sessionId === options.sessionId);
     if (existing) return existing;
     return this.store.insert('media_assets', {id: this.id(), projectId, kind, contentType: type.contentType, bytes, sha256, origin: options.origin,
       ...(options.sessionId ? {sessionId: options.sessionId} : {}), ...(options.label ? {label: options.label.slice(0, 200)} : {}), ...(options.license ? {license: options.license.slice(0, 300)} : {}), createdAt: this.now()});
