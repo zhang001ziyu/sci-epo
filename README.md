@@ -73,13 +73,13 @@ Versions up to 0.4.6 were developed in a private repository without Kiro, and pa
 
 ## Status and limits
 
-- Sci-epo does not run H3; workers do. One episode was rendered with the real H3 model in Colab on 2026-11-10 with the planner and the worker, before render sessions existed. Render sessions, QA and cuts are tested offline, with a local rehearsal of a real episode and a real ffmpeg cut; a GPU session through the new flow has not run yet. The program-built prompts are plainer than hand-written ones.
+- Sci-epo does not run H3; workers do. One episode was rendered with the real H3 model in Colab on 2026-11-10 with the planner and the worker, before render sessions existed. On 2026-11-12 the same episode went through the new flow on a Colab G4 runtime: one render session rendered all 10 takes in 38 minutes for about 6.3 compute units, checked and uploaded each, and released the runtime by itself; Sci-epo then cut both languages. Speech recognition did not run in that session, so the spoken-line check is not verified on a GPU yet. The program-built prompts are plainer than hand-written ones.
 - A deployment has one owner. Public registration and multi-user workspaces are not implemented.
 - Review quotation checks are structural. The model still makes the semantic judgments, and the author has to read the result.
 
 ## Next
 
-- A GPU render session of a reviewed episode through the new flow, and prompt changes from what it shows.
+- A GPU render session of a reviewed and rewritten episode, with the spoken-line check working, and prompt changes from what it shows.
 - Portrait candidates rendered with SDXL in a session, and carrying approved takes over to a new batch.
 - A public demo site with prepared examples and no model calls, for judges.
 

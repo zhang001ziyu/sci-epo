@@ -96,6 +96,7 @@ Status: milestones 1–3 implemented except the items left open below; milestone
   - _Requirements: 11.1, 11.2_
 - [ ] 12.2 Run one live session on G4 with a reviewed episode. Check the estimate, clips without music under `N/A`, the release and 0 compute units per hour afterwards, and compare time and compute units with the first run.
   - _Requirements: 4.2, 4.7, 6.5_
+  - 2026-11-12, with the unreviewed episode (readiness confirmed for the test): 10 of 10 takes rendered in a 38.1-minute session, estimate 39.2 minutes; 6.34 compute units against 6.96 in the first run; the runtime released itself (0 per hour, 0 sessions). Drafts were cut automatically and final cuts with a music bed afterwards. Open: speech recognition did not run (worker fix in 9f5d969 not yet verified on a GPU), and a reviewed episode.
 
 ## Later
 
