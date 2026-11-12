@@ -3,6 +3,7 @@ import { canonicalJsonBytes } from './canonicalJson';
 import { languageTag, languageName, scriptLanguage, type NotesLanguage } from './languages';
 import { scriptLines } from './scriptLines';
 import { buildStoryboardMessages } from './storyboardPrompt';
+import { buildBibleMessages } from './biblePrompt';
 import { checkLength, lengthInstruction, parseLengthTarget } from './length';
 import { buildVerificationFacts, buildVerificationAudit, sourceLineIndex } from './reviewVerification';
 import { createEvidenceReader, EVIDENCE_REF_GUIDANCE } from './evidence';
@@ -159,7 +160,8 @@ export function buildModelMessages(request: ModelRequest): {role: 'system' | 'us
     return [{role: 'system', content: `${intro}\n${craftGuidance(brief)}\n${lengthInstruction(request.context.brief)}${durationLine(brief)}\n输出格式：{"title":"本集名","logline":"一句话梗概","scenes":[{"id":"s1","heading":"内/外景 · 地点 · 时间","content":"动作与人物对白，使用换行"}]}。至少一场，场景编号唯一；不必凑固定场数，不生成 locked 字段。${lineFormatReminder(brief)}`}, {role: 'user', content: JSON.stringify({task: `根据创作简报与已采用的前集资料，写一集完整 ${languageName(language)} 剧本。遵守术语表，保持角色说话方式，不输出翻译腔。`, episodeTitle: request.episodeTitle, context: request.context})}];
   }
   const revision = request.revision!;
-  if (request.kind === 'storyboard') return buildStoryboardMessages(revision);
+  if (request.kind === 'storyboard') return buildStoryboardMessages(revision, request.bible);
+  if (request.kind === 'bible') return buildBibleMessages(revision);
   if (request.kind === 'localize') {
     const target = languageTag(request.targetLanguage);
     if (target === language) throw new Error('目标语言必须与原稿不同。');

@@ -4,7 +4,7 @@
 import { CAMERA_MOVES, SHOT_SIZES, type CastMember, type Episode, type Localization, type Revision, type Scene, type Shot, type ShotList, type ShotListContent } from '../types';
 import { MAX_SHOT_SECONDS } from './formats';
 import { languageName, scriptLanguage } from './languages';
-import { READING_SPEEDS, dialoguePositions, isLineAligned, minimumSpeechSeconds, normalizeSpeakerName, quotedParts, readingCharacters, readingSeconds, screenTextOf, scriptLines, type ReadingSpeeds } from './scriptLines';
+import { READING_SPEEDS, dialoguePositions, isCharacterLanguage, isLineAligned, labelOnly, minimumSpeechSeconds, normalizeSpeakerName, quotedParts, readingCharacters, readingSeconds, screenTextOf, scriptLines, spokenText, type ReadingSpeeds } from './scriptLines';
 
 export class ShotListError extends Error { override name = 'ShotListError'; }
 const reject = (message: string): never => { throw new ShotListError(message); };
@@ -173,32 +173,108 @@ export function shotTexts(list: Pick<ShotList, 'shots'>, revision: Pick<Revision
 
 export const totalDuration = (list: Pick<ShotList, 'shots'>): number => round(list.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0));
 
-export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
-export interface ShotWarning { kind: ShotWarningKind; message: string; shotId?: string; language?: string }
+export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'too_short_for_content' | 'multiple_actions' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
+/** suggestedSeconds and splitAt are one-click fixes: the duration the content needs, and the line to split before. */
+export interface ShotWarning { kind: ShotWarningKind; message: string; shotId?: string; language?: string; suggestedSeconds?: number; splitAt?: number }
 /** readingSpeed overrides READING_SPEEDS, in characters per second. */
 export interface ShotListContext { revision: Revision; adaptations: Record<string, Pick<Localization, 'id' | 'scenes'>>; newest?: Record<string, string>; readingSpeed?: ReadingSpeeds }
+
+/** Natural speaking rates for planning, the ones the storyboard prompt gives; SPEECH_RATES is the fast lower bound. */
+export const PLANNING_SPEECH_RATES = {wordsPerSecond: 2.5, charactersPerSecond: 4} as const;
+/** Screen time one action line needs, so the viewer sees it happen. */
+export const ACTION_BEAT_SECONDS = 1.5;
+/** The estimate is rough: a shot counts as too short only when it misses the need by more than this. */
+export const SHORT_TOLERANCE_SECONDS = 0.5;
+export const isTooShort = (need: Pick<ShotNeed, 'seconds'>, shot: Pick<Shot, 'durationSeconds'>): boolean => need.seconds - shot.durationSeconds > SHORT_TOLERANCE_SECONDS + 1e-9;
+/** What a shot's content needs, in the language that needs the most time. Seconds are rounded up to half a second. */
+export interface ShotNeed { seconds: number; speech: number; reading: number; actions: number[]; language: string }
+
+const ceilHalf = (value: number) => Math.ceil(value * 2 - 1e-9) / 2;
+function planningSpeechSeconds(lines: string[], language: string): number {
+  const text = lines.map(spokenText).join(' ');
+  const count = isCharacterLanguage(language) ? [...text].filter(c => /[\p{L}\p{N}]/u.test(c)).length : text.split(/\s+/u).filter(w => /[\p{L}\p{N}]/u.test(w)).length;
+  return count / (isCharacterLanguage(language) ? PLANNING_SPEECH_RATES.charactersPerSecond : PLANNING_SPEECH_RATES.wordsPerSecond);
+}
+
+/** Action lines of a shot: lines that are not dialogue, not a speaker label, and not on-screen text. Each is one beat. */
+export function actionLines(shot: Pick<Shot, 'firstLine' | 'lastLine' | 'spoken' | 'screenText'>, sceneContent: string): number[] {
+  const lines = scriptLines(sceneContent), dialogue = dialoguePositions(sceneContent), spoken = new Set(shot.spoken.map(s => s.line));
+  const screen = new Set(screenTextLines(shot, lines)), out: number[] = [];
+  for (let position = shot.firstLine; position <= shot.lastLine; position++) {
+    const line = lines[position - 1] ?? '';
+    if (!line.trim() || spoken.has(position) || dialogue.has(position) || screen.has(position)) continue;
+    if (labelOnly(line) && dialogue.has(position + 1)) continue;
+    out.push(position);
+  }
+  return out;
+}
+
+/** Seconds each shot's content needs: speech at a natural pace, reading time for on-screen text, and 1.5 seconds per action. */
+export function shotNeeds(list: Pick<ShotList, 'shots'>, context: Pick<ShotListContext, 'revision' | 'adaptations' | 'readingSpeed'>): Map<string, ShotNeed> {
+  const {revision, adaptations} = context, source = scriptLanguage(revision), languages = [source, ...Object.keys(adaptations).filter(l => l !== source)];
+  const scenes = new Map(revision.scenes.map(s => [s.id, s])), speeds = context.readingSpeed ?? READING_SPEEDS, needs = new Map<string, ShotNeed>();
+  for (const {shot, lines} of shotTexts(list, revision, adaptations)) {
+    const content = scenes.get(shot.sceneId)?.content ?? '', actions = actionLines(shot, content);
+    const spoken = new Set(shot.spoken.map(s => s.line)), screen = screenTextLines(shot, scriptLines(content));
+    let best: ShotNeed | undefined;
+    for (const language of languages) {
+      const speech = planningSpeechSeconds(lines.filter(l => spoken.has(l.position)).map(l => l.texts[language] ?? '').filter(Boolean), language);
+      const reading = readingSeconds(screen.map(p => screenTextOf(lines.find(l => l.position === p)?.texts[language] ?? '')).filter(Boolean), language, speeds);
+      const seconds = ceilHalf(Math.max(1, speech + reading + actions.length * ACTION_BEAT_SECONDS));
+      if (!best || seconds > best.seconds) best = {seconds, speech: round(speech), reading: round(reading), actions, language};
+    }
+    needs.set(shot.id, best!);
+  }
+  return needs;
+}
+
+/** The line to split a shot before: its second action, or the middle line. Undefined for a one-line shot. */
+function splitPoint(shot: Pick<Shot, 'firstLine' | 'lastLine'>, actions: number[], lines: string[]): number | undefined {
+  if (actions.length >= 2) return actions[1];
+  if (shot.lastLine <= shot.firstLine) return undefined;
+  const middle = shot.firstLine + Math.floor((shot.lastLine - shot.firstLine + 1) / 2);
+  // Never leave a speaker label on its own line at the end of the first part.
+  if (!labelOnly(lines[middle - 2] ?? '')) return middle;
+  if (middle - 1 > shot.firstLine) return middle - 1;
+  return middle + 1 <= shot.lastLine ? middle + 1 : undefined;
+}
 
 /** Advisory checks only: they never block saving, adoption or export. */
 export function shotListWarnings(list: Pick<ShotList, 'cast' | 'shots' | 'voiceLanguages'>, context: ShotListContext): ShotWarning[] {
   const {revision, adaptations} = context, source = scriptLanguage(revision), warnings: ShotWarning[] = [];
   const names = new Map(list.cast.map(c => [c.id, c.name])), languages = [source, ...Object.keys(adaptations)];
   const sceneLines = new Map(revision.scenes.map(s => [s.id, scriptLines(s.content)])), speeds = context.readingSpeed ?? READING_SPEEDS;
+  const needs = shotNeeds(list, context);
   for (const {shot, lines} of shotTexts(list, revision, adaptations)) {
-    if (shot.durationSeconds > MAX_SHOT_SECONDS) warnings.push({kind: 'too_long', shotId: shot.id, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，超过单次视频生成的 ${MAX_SHOT_SECONDS} 秒。`});
+    const need = needs.get(shot.id)!, split = splitPoint(shot, need.actions, sceneLines.get(shot.sceneId) ?? []);
+    const fixes = {...(need.seconds > shot.durationSeconds ? {suggestedSeconds: Math.min(need.seconds, MAX_SHOT_SECONDS)} : {}), ...(split ? {splitAt: split} : {})};
+    const before = warnings.length;
+    if (shot.durationSeconds > MAX_SHOT_SECONDS) warnings.push({kind: 'too_long', shotId: shot.id, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，超过单次视频生成的 ${MAX_SHOT_SECONDS} 秒。`, ...(split ? {splitAt: split} : {})});
     const spoken = new Set(shot.spoken.map(s => s.line));
     for (const language of languages) {
       const texts = lines.filter(l => spoken.has(l.position)).map(l => l.texts[language] ?? '').filter(Boolean);
       const minimum = minimumSpeechSeconds(texts, language);
-      if (texts.length && shot.durationSeconds < minimum) warnings.push({kind: 'too_short_for_speech', shotId: shot.id, language, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，${languageName(language)} 台词至少约需 ${minimum} 秒。`});
+      if (texts.length && shot.durationSeconds < minimum) warnings.push({kind: 'too_short_for_speech', shotId: shot.id, language, message: `镜头 ${shot.id} 预计 ${shot.durationSeconds} 秒，${languageName(language)} 台词至少约需 ${minimum} 秒。`, ...fixes});
     }
     const screen = screenTextLines(shot, sceneLines.get(shot.sceneId) ?? []);
     if (screen.length) for (const language of languages) {
       const texts = screen.map(position => screenTextOf(lines.find(l => l.position === position)?.texts[language] ?? '')).filter(Boolean);
       const seconds = readingSeconds(texts, language, speeds), characters = texts.reduce((sum, text) => sum + readingCharacters(text), 0);
-      if (seconds > shot.durationSeconds) warnings.push({kind: 'screen_text_unreadable', shotId: shot.id, language, message: `镜头 ${shot.id} 的画面文字（${languageName(language)}）有 ${characters} 个字符，约需 ${Math.ceil(seconds * 10) / 10} 秒读完，镜头只有 ${shot.durationSeconds} 秒。可以缩短文字，或延长这个镜头。`});
+      if (seconds > shot.durationSeconds) warnings.push({kind: 'screen_text_unreadable', shotId: shot.id, language, message: `镜头 ${shot.id} 的画面文字（${languageName(language)}）有 ${characters} 个字符，约需 ${Math.ceil(seconds * 10) / 10} 秒读完，镜头只有 ${shot.durationSeconds} 秒。可以缩短文字，或延长这个镜头。`, ...fixes});
     }
+    // The combined need, only when no narrower duration check has already spoken for this shot.
+    const timed = warnings.slice(before).some(w => w.kind === 'too_short_for_speech' || w.kind === 'screen_text_unreadable');
+    if (!timed && isTooShort(need, shot)) {
+      const parts = [need.speech ? `台词约 ${need.speech} 秒` : '', need.reading ? `读画面文字约 ${need.reading} 秒` : '', need.actions.length ? `${need.actions.length} 个动作，每个约 ${ACTION_BEAT_SECONDS} 秒` : ''].filter(Boolean).join('，');
+      const fix = need.seconds > MAX_SHOT_SECONDS ? `超过单镜 ${MAX_SHOT_SECONDS} 秒，需要拆成几个镜头。` : `可以改成 ${need.seconds} 秒${split ? '，或拆成两个镜头' : ''}。`;
+      warnings.push({kind: 'too_short_for_content', shotId: shot.id, language: need.language, message: `镜头 ${shot.id} 现在 ${shot.durationSeconds} 秒，按内容大约要 ${need.seconds} 秒（${parts}）。${fix}`, ...fixes});
+    }
+    if (need.actions.length >= 2) warnings.push({kind: 'multiple_actions', shotId: shot.id, splitAt: need.actions[1]!, message: `镜头 ${shot.id} 里有 ${need.actions.length} 个动作（第 ${need.actions.join('、')} 行）。视频模型在一个镜头里常常只演出一个，其余的会漏掉或糊在一起。建议从第 ${need.actions[1]} 行拆开，一个镜头只放一个动作。`});
     const speakers = new Set(shot.spoken.map(s => s.castId));
-    if (speakers.size > 1) warnings.push({kind: 'multiple_speakers', shotId: shot.id, message: `镜头 ${shot.id} 有 ${speakers.size} 人说话，视频模型可能把台词安到别人嘴上；可考虑拆成正反打。`});
+    const reply = shot.spoken.find(s => s.castId !== shot.spoken[0]?.castId)?.line;
+    // A speaker label on its own line goes with the reply.
+    const turn = reply && labelOnly(sceneLines.get(shot.sceneId)?.[reply - 2] ?? '') ? reply - 1 : reply;
+    if (speakers.size > 1) warnings.push({kind: 'multiple_speakers', shotId: shot.id, message: `镜头 ${shot.id} 有 ${speakers.size} 人说话，视频模型可能把台词安到别人嘴上；可考虑拆成正反打。`, ...(turn && turn > shot.firstLine ? {splitAt: turn} : {})});
   }
   for (const scene of revision.scenes) {
     const dialogue = dialoguePositions(scene.content), shots = list.shots.filter(s => s.sceneId === scene.id);

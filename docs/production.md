@@ -6,12 +6,23 @@ Sci-epo plans and keeps the record; the GPU work happens in a worker that Sci-ep
 
 | Step | Where | You | Sci-epo keeps |
 |---|---|---|---|
+| 0. Script to shots | 分镜 tab | confirm the episode bible, fix shot lengths, check every shot | the bible, the shot list version, one confirmation per shot |
 | 1. Readiness | 制作 tab | fix or confirm each open item | the checklist and your confirmation, with the batch |
 | 2. Cast | 制作 tab | upload a portrait per character, check it against the appearance text | references with SHA-256 |
 | 3. Render batch | 制作 tab | choose size, steps, music mode | one job per distinct render, take 1 queued |
 | 4. Render session | 制作 tab, then Colab | paste the session code into the notebook's one cell | progress, takes, QA files |
 | 5. Review | 制作 tab | approve a take per clip, or ask for a retake | verdicts and reasons |
 | 6. Cut | 制作 tab | choose music, check captions, sign off | the episode video, the report, the manifest |
+
+## 0. From the script to the shots
+
+Each clip of about 15 seconds is rendered on its own. Without a shared description of the rooms and objects, every clip invents them again, so a room or a prop changes from one clip to the next. The shot tab has three parts that close this gap before any GPU time is spent.
+
+**Episode bible.** For the accepted revision, list the locations and props, and for each scene the location it happens in and the props on screen. Each location and prop has a name, an English description for the video model (size, color, material, position), and an optional note for the author. The writing model can draft it, or you can start from the scene headings and fill it in. Only a confirmed bible of the accepted revision is used. With it, the storyboard prompt asks the model to keep compositions in those places with those props, and the first shot of every clip prompt describes its scene's setting and how its props look. A new accepted revision marks the bible for confirmation again.
+
+**Shot lengths and actions.** Every shot gets an estimate of the time its content needs: its spoken lines at a natural pace (2.5 words or 4 Chinese characters per second, in the language that needs most), reading time for its on-screen text, and 1.5 seconds per action line. A shot more than half a second short of that, and a shot with two or more action lines, gets a warning with a one-click fix: set the suggested length, or split before the suggested line. Fixes go into a draft; saving makes a new shot-list version, which you adopt again.
+
+**Shot-by-shot check.** The 逐镜确认 view shows each shot of the production list in plain words: framing and camera move, location, who is in frame, how many actions, lines and texts, its length against the estimate, the scene's props, and each covered line in every voice language. You confirm each shot. A confirmation records the bible confirmation it saw, so a changed bible asks for the check again; a new shot-list version keeps the confirmations of shots that did not change. The readiness checklist lists the bible and the shot check as items.
 
 ## 1. Readiness
 
@@ -20,7 +31,9 @@ Above the batch form, the checklist shows each item as passed, warning or failed
 - the accepted script, with no pending recheck;
 - a complete live review of that revision, and each open issue it raised;
 - a bound, line-aligned adaptation for every voice language;
-- a current production shot list, and each of its warnings, including on-screen text that cannot be read in its shot;
+- a confirmed episode bible of the accepted revision;
+- a current production shot list, and each of its warnings, including on-screen text that cannot be read in its shot, shots too short for their content and shots with more than one action;
+- a confirmation of every shot of the production shot list;
 - an appearance and a voice for every character, and an approved portrait for every character in frame.
 
 A batch needs every item to pass, or your confirmation of each remaining item. The confirmation is stored with the batch and appears in the delivery report. The first real H3 run showed why: an unreviewed draft with logic gaps went straight into the video.

@@ -19,6 +19,8 @@ import { reviewSuggestion } from '../core/reviewSuggestions';
 import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
 import { requireLineAlignment } from '../core/scriptLines';
+import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
+import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
 
 export class HttpError extends Error { constructor(public status:number,message:string){super(message);} }
@@ -302,13 +304,50 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    if(list.sourceRevisionId!==e.acceptedRevisionId||e.needsReview)return fail(409,'只能采用基于本集当前定稿的分镜表；请先采用并复核这一版剧本。');
    store.update('episodes',{...e,productionShotListId:list.id});return store.bundle(e.projectId);
   }
+  if(a==='episodes'&&target&&(action==='bible-draft'||action==='bible')&&method==='POST'){
+   const e=episode(target);
+   if(!e.acceptedRevisionId||e.needsReview)return fail(409,'先采用并复核本集定稿，再整理本集设定。');
+   const r=revision(e.acceptedRevisionId);
+   if(action==='bible-draft'){
+    if(e.bible?.confirmedAt&&e.bible.revisionId===r.id&&body.replaceConfirmed!==true)return fail(409,'本集设定已经确认过。重新起草会替换它，请确认后再试。');
+    return model(e,body,{kind:'bible',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
+     let content;try{content=parseBibleOutput(raw,r);}catch(error){throw new HttpError(502,`本集设定草稿未通过校验：${error instanceof Error?error.message:''}`);}
+     const fresh=episode(e.id),bible={...content,revisionId:r.id,mode,createdAt:now()};
+     store.update('episodes',{...fresh,bible});return {id:e.id,...bible};
+    });
+   }
+   let content;try{content=parseBible(body,r);}catch(error){return fail(400,error instanceof Error?error.message:'本集设定格式无效。');}
+   if(typeof body.confirm!=='boolean')return fail(400,'请说明是保存草稿还是确认。');
+   const old=e.bible,same=!!old&&old.revisionId===r.id&&JSON.stringify(parseBible(old,r))===JSON.stringify(content);
+   // Re-confirming an unchanged bible keeps its stamp, so shot confirmations stay valid.
+   const confirmedAt=body.confirm?(same&&old!.confirmedAt?old!.confirmedAt:now()):undefined;
+   const bible={...content,revisionId:r.id,mode:same?old!.mode:'manual' as const,createdAt:same?old!.createdAt:now(),...(confirmedAt?{confirmedAt}:{})};
+   store.update('episodes',{...e,bible});return store.bundle(e.projectId);
+  }
+  if(a==='shot-lists'&&target&&action==='review'&&method==='POST'){
+   const list=store.get('shot_lists',target)??fail(404,'找不到分镜表。'),e=episode(list.episodeId),shotId=str(body.shotId,'镜头编号',40);
+   if(!list.shots.some(s=>s.id===shotId))return fail(404,'这份分镜表里没有这个镜头。');
+   if(typeof body.confirmed!=='boolean')return fail(400,'请说明是确认还是撤销确认。');
+   const bible=confirmedBible(e,{id:list.sourceRevisionId});
+   if(body.confirmed&&!bible)return fail(409,'先确认本集设定（地点和道具），再逐镜确认。');
+   const old=store.get('shot_reviews',list.id),shots={...old?.shots};
+   if(body.confirmed)shots[shotId]={at:now(),bible:bibleStamp(bible)};else delete shots[shotId];
+   store.put('shot_reviews',{id:list.id,episodeId:e.id,shots});return store.bundle(e.projectId);
+  }
   if(a==='shot-lists'&&target&&action==='edit'&&method==='POST'){
    const old=store.get('shot_lists',target)??fail(404,'找不到分镜表。'),r=revision(old.sourceRevisionId),e=episode(r.episodeId),p=project(e.projectId);
    const voiceLanguages=p.voiceLanguages??[scriptLanguage(r)];
    let content,adaptations;
    try{content=parseShotList({cast:body.cast,shots:body.shots},r);adaptations=parseAdaptationBinding(body.adaptations,r,store.all('localizations'),voiceLanguages);}
    catch(error){return fail(400,error instanceof Error?error.message:'分镜表格式无效。');}
-   return store.insert('shot_lists',{...content,id:id(),episodeId:e.id,sourceRevisionId:r.id,parentId:old.id,aspectRatio:old.aspectRatio,voiceLanguages,adaptations,mode:'manual',createdAt:now()});
+   const saved=store.insert('shot_lists',{...content,id:id(),episodeId:e.id,sourceRevisionId:r.id,parentId:old.id,aspectRatio:old.aspectRatio,voiceLanguages,adaptations,mode:'manual',createdAt:now()});
+   // Unchanged shots keep the author's confirmation, as long as the cast and the bound adaptations are the same.
+   const checked=store.get('shot_reviews',old.id),same=(x:unknown,y:unknown)=>JSON.stringify(x)===JSON.stringify(y);
+   if(checked&&same(old.cast,saved.cast)&&same(old.adaptations,saved.adaptations)){
+    const kept=Object.fromEntries(Object.entries(checked.shots).filter(([sid])=>{const a=old.shots.find(s=>s.id===sid),b=saved.shots.find(s=>s.id===sid);return !!a&&!!b&&same(a,b);}));
+    if(Object.keys(kept).length)store.put('shot_reviews',{id:saved.id,episodeId:e.id,shots:kept});
+   }
+   return saved;
   }
   if(a==='localizations'&&target&&action==='edit'&&method==='POST'){
    const l=store.get('localizations',target)??fail(404,'找不到语言版本。'),r=revision(l.sourceRevisionId);
@@ -332,7 +371,8 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    const r=revision(target),e=episode(r.episodeId);
    if(action==='shot-lists'){
     const voiceLanguages=project(e.projectId).voiceLanguages??[scriptLanguage(r)];
-    return model(e,body,{kind:'storyboard',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
+    const bible=confirmedBible(e,r);
+    return model(e,body,{kind:'storyboard',context:r.context,revision:r,episodeTitle:e.title,...(bible?{bible:{locations:bible.locations,props:bible.props,scenes:bible.scenes}}:{})},(raw,mode)=>{
      let content;try{content=parseShotListOutput(raw,r);}catch(error){throw new HttpError(502,`分镜表未通过校验：${error instanceof Error?error.message:''}原稿已保留。`);}
      const adaptations=Object.fromEntries(Object.entries(newestAlignedAdaptations(r,store.all('localizations'),voiceLanguages)).map(([language,l])=>[language,l.id]));
      return store.insert('shot_lists',{...content,id:id(),episodeId:e.id,sourceRevisionId:r.id,parentId:null,aspectRatio:aspectRatioOf(r.context.brief),voiceLanguages,adaptations,mode,createdAt:now()});

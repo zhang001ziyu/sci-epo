@@ -1,8 +1,10 @@
 /** The readiness checklist of an episode before a render batch: what has passed, what warns and what fails, with the
  * tab where the author fixes it. A batch needs every item to pass, or the author's confirmation of the rest.
  * Browser-safe, so the production tab shows the same items the server checks. */
-import type { Episode, Localization, ProductionProfile, ReadinessItem, Review, Revision, ShotList } from '../types';
+import type { Episode, Localization, ProductionProfile, ReadinessItem, Review, Revision, ShotList, ShotReview } from '../types';
+import { bibleNotes, bibleState, confirmedBible } from './bible';
 import { languageName, scriptLanguage } from './languages';
+import { reviewProgress } from './shotReview';
 import { normalizeSpeakerName } from './scriptLines';
 import { boundAdaptations, newestAlignedAdaptations, shotListStatus, shotListWarnings } from './shotList';
 
@@ -10,11 +12,13 @@ const DIMENSION_LABELS: Record<string, string> = {story: '故事与因果', char
 const clip = (text: string, max = 140) => { const t = text.replace(/\s+/gu, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
 
 export interface ReadinessInput {
-  episode: Pick<Episode, 'acceptedRevisionId' | 'needsReview' | 'productionShotListId'>;
+  episode: Pick<Episode, 'acceptedRevisionId' | 'needsReview' | 'productionShotListId' | 'bible'>;
   /** The accepted revision, when there is one. */
   revision?: Revision;
   /** The production shot list, when there is one. */
   list?: ShotList;
+  /** The author's shot-by-shot check of the production shot list. */
+  shotReview?: ShotReview;
   reviews: Review[];
   localizations: Localization[];
   profile?: ProductionProfile;
@@ -47,11 +51,26 @@ export function readinessItems(input: ReadinessInput): ReadinessItem[] {
   else items.push({id: 'review', status: 'passed', message: '这一版定稿有完整的真实模型审稿。', link: {tab: 'review'}});
   if (review) for (const issue of openIssues(review)) items.push({id: issue.id, status: 'warning', message: issue.message, link: {tab: 'review'}});
 
+  const state = bibleState(episode.bible, revision);
+  if (state === 'confirmed') {
+    items.push({id: 'bible', status: 'passed', message: '本集设定（地点和道具）已确认，每段视频都会按它来画。', link: {tab: 'shots'}});
+    for (const n of bibleNotes(episode.bible!)) items.push({id: `bible_note:${n.id}`, status: 'warning', message: `本集设定：${n.message}`, link: {tab: 'shots'}});
+  } else items.push({id: 'bible', status: 'failed', link: {tab: 'shots'}, message: state === 'missing'
+    ? '还没有本集设定。没有它，每段视频会各自想象房间和道具，前后对不上。请在分镜页整理并确认地点和道具。'
+    : state === 'draft' ? '本集设定还是草稿，没有确认。请在分镜页看一遍地点和道具，再点确认。'
+    : '剧本定稿换了版本，本集设定是按旧版确认的。请在分镜页看一遍还对不对，再重新确认。'});
+
   if (!list) { items.push({id: 'shot_list', status: 'failed', message: '还没有采用制作用分镜表。', link: {tab: 'shots'}}); return items; }
   const current = shotListStatus(list, episode).current;
   items.push(current
     ? {id: 'shot_list', status: 'passed', message: '制作用分镜表基于本集当前定稿。', link: {tab: 'shots'}}
     : {id: 'shot_list', status: 'failed', message: '制作用分镜表不是基于本集当前定稿的版本，请在分镜页采用新的分镜表。', link: {tab: 'shots'}});
+
+  const progress = reviewProgress(list, input.shotReview, confirmedBible(episode, revision));
+  const listed = (ids: string[]) => ids.length > 6 ? `${ids.slice(0, 6).join('、')} 等 ${ids.length} 个` : ids.join('、');
+  items.push(progress.open.length
+    ? {id: 'shot_review', status: 'failed', link: {tab: 'shots', target: progress.open[0]}, message: `还有 ${progress.open.length} 个镜头没有逐个确认：${listed(progress.open)}。${progress.outdated.length ? `其中 ${listed(progress.outdated)} 是本集设定改过之后要重新确认的。` : ''}请在分镜页的“逐镜确认”里一个个看过。`}
+    : {id: 'shot_review', status: 'passed', message: `全部 ${list.shots.length} 个镜头都已逐个确认。`, link: {tab: 'shots'}});
 
   const source = scriptLanguage(revision), bound = boundAdaptations(list, input.localizations);
   const languages = input.languages ?? list.voiceLanguages.filter(l => l === source || bound[l]);

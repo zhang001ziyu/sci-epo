@@ -13,7 +13,19 @@ export interface ProductionProfile { style: string; music: string; characters: P
 export interface Project extends Brief { id: string; createdAt: string; updatedAt: string; publication?: PublicationSettings; voiceLanguages?: string[]; production?: ProductionProfile; productionSettings?: ProductionSettings }
 /** Production settings outside the frozen brief. The compute-unit rate is the one Colab shows for the chosen runtime. */
 export interface ProductionSettings { computeUnitsPerHour?: number }
-export interface Episode { id: string; projectId: string; ordinal: number; title: string; acceptedRevisionId: string | null; needsReview: boolean; createdAt: string; contextToken?: string; productionShotListId?: string }
+export interface Episode { id: string; projectId: string; ordinal: number; title: string; acceptedRevisionId: string | null; needsReview: boolean; createdAt: string; contextToken?: string; productionShotListId?: string; bible?: EpisodeBible }
+/** A place of the episode. look is an English noun phrase for the video model; note is the author's own wording. */
+export interface BibleLocation { id: string; name: string; look: string; note?: string }
+/** An object the story uses, described so that it looks the same in every clip. */
+export interface BibleProp { id: string; name: string; look: string; note?: string }
+/** Where one scene happens and which props it shows. */
+export interface BibleScene { sceneId: string; locationId: string; props: string[] }
+export interface BibleContent { locations: BibleLocation[]; props: BibleProp[]; scenes: BibleScene[] }
+/** The episode bible of one revision. Only a confirmed bible of the accepted revision reaches shot lists and clip prompts. */
+export interface EpisodeBible extends BibleContent { revisionId: string; mode: ProviderMode; createdAt: string; confirmedAt?: string }
+/** The author's shot-by-shot check of one shot list, keyed by the shot list ID.
+ * Each confirmation records the bible confirmation it saw, so a changed bible asks for a new check. */
+export interface ShotReview { id: string; episodeId: string; shots: Record<string, {at: string; bible: string | null}> }
 export interface Scene { id: string; heading: string; content: string; locked: boolean }
 export interface ContextSnapshot { brief: Brief; previousEpisodes: { episodeId: string; ordinal: number; revisionId: string; title: string; scenes: Scene[] }[]; hash: string }
 export type ProviderMode = 'live' | 'demo' | 'manual';
@@ -28,8 +40,8 @@ export interface CausalCheck { sceneId: string; state: string; choice: string; o
 export interface CausalPressure { sceneId: string; trigger: string; threatenedOutcome: string; currentState: string; directAlternative: string; verdict: 'binding' | 'gap' | 'uncertain' | 'background'; explanation: string; evidence: Evidence[]; blockingEvidence: {sourceId:string;quote:string}[]; suggestedFix?: string; suggestedSceneId?: string }
 export interface CausalAudit { status: 'completed' | 'needs_review'; checks: CausalCheck[]; errors: string[]; pressures?: CausalPressure[] }
 export interface Review { id: string; revisionId: string; status: 'completed' | 'needs_review'; assessments: Assessment[]; errors: string[]; mode: ProviderMode; createdAt: string; lengthCheck?: LengthCheck; causality?: CausalAudit; verification?: import('./core/reviewVerification').ReviewVerification; verificationOfReviewId?: string }
-export interface ModelAttempt { callId: number; sequence: number; stage: 'generate' | 'review' | 'causality' | 'facts' | 'verification' | 'rewrite' | 'localize' | 'storyboard'; batch?: number; targetIds?: string[]; attempt: 1 | 2; status: 'running' | 'succeeded' | 'failed'; errorCode?: string; validationErrors?: string[]; startedAt: string; finishedAt?: string; elapsedMs?: number; retryScheduled?: boolean; retryStoppedReason?: 'call_limit' | 'run_limit' | 'review_stopped' | 'not_eligible' }
-export interface Run { id: string; episodeId: string; kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard'; status: 'running' | 'succeeded' | 'failed'; mode: ProviderMode; resultId: string | null; error: string | null; createdAt: string; finishedAt: string | null; modelSnapshot?: import('./providerTypes').ModelSnapshot; modelAttempts?: ModelAttempt[] }
+export interface ModelAttempt { callId: number; sequence: number; stage: 'generate' | 'review' | 'causality' | 'facts' | 'verification' | 'rewrite' | 'localize' | 'storyboard' | 'bible'; batch?: number; targetIds?: string[]; attempt: 1 | 2; status: 'running' | 'succeeded' | 'failed'; errorCode?: string; validationErrors?: string[]; startedAt: string; finishedAt?: string; elapsedMs?: number; retryScheduled?: boolean; retryStoppedReason?: 'call_limit' | 'run_limit' | 'review_stopped' | 'not_eligible' }
+export interface Run { id: string; episodeId: string; kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible'; status: 'running' | 'succeeded' | 'failed'; mode: ProviderMode; resultId: string | null; error: string | null; createdAt: string; finishedAt: string | null; modelSnapshot?: import('./providerTypes').ModelSnapshot; modelAttempts?: ModelAttempt[] }
 export const SHOT_SIZES = ['extreme_close_up','close_up','medium_close_up','medium','medium_wide','wide','insert'] as const;
 export const CAMERA_MOVES = ['static','push_in','pull_out','pan','tilt','track','handheld'] as const;
 export interface CastMember { id: string; name: string }
@@ -104,7 +116,7 @@ export interface RenderOutput { file: string; seconds?: number; bytes?: number; 
 export interface RenderJob { id: string; batchId: string; clipId: string; language: string; order: number; status: 'queued' | 'claimed' | 'succeeded' | 'failed'; attempts: number; workerTokenId?: string; workerLabel?: string; leaseExpiresAt?: string; output?: RenderOutput; error?: string; updatedAt: string }
 /** Only the SHA-256 of a worker token is stored. */
 export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
-export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[]; cuts?: Cut[] }
+export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[]; cuts?: Cut[]; shotReviews?: ShotReview[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
-export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard'; context: ContextSnapshot; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
+export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible'; context: ContextSnapshot; bible?: BibleContent; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

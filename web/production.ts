@@ -75,6 +75,9 @@ export function mediaUsage(media: MediaAsset[]): number {
   return [...new Map(media.map(m => [m.sha256, m.bytes])).values()].reduce((sum, bytes) => sum + bytes, 0);
 }
 
+/** The open readiness items' IDs in checklist order: a changed checklist needs a new confirmation. */
+const readinessSignature = (items: ReadinessItem[]) => items.filter(i => i.status !== 'passed').map(i => i.id).join('\n');
+
 export class ProductionPanel {
   private draft: ProductionProfile | null = null;
   private draftFor = '';
@@ -200,7 +203,8 @@ export class ProductionPanel {
   /** The checklist for a batch in the chosen languages, computed the way the server checks it. */
   private readiness(ctx: ProductionContext): ReadinessItem[] {
     const {episode, bundle} = ctx, revision = bundle.revisions.find(r => r.id === episode.acceptedRevisionId), list = productionList(bundle, episode).list;
-    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), reviews: bundle.reviews, localizations: bundle.localizations,
+    const shotReview = list ? bundle.shotReviews?.find(r => r.id === list.id) : undefined;
+    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: bundle.reviews, localizations: bundle.localizations,
       ...(bundle.project.production ? {profile: bundle.project.production} : {}), ...(this.languages ? {languages: this.languages} : {})});
   }
 
@@ -208,7 +212,7 @@ export class ProductionPanel {
     const counts = {passed: 0, warning: 0, failed: 0};
     for (const item of items) counts[item.status]++;
     const open = items.filter(i => i.status !== 'passed').sort((a, b) => (a.status === 'failed' ? 0 : 1) - (b.status === 'failed' ? 0 : 1));
-    const signature = open.map(i => i.id).join('\n'), confirmed = !!open.length && this.readinessConfirmed === signature;
+    const confirmed = !!open.length && this.readinessConfirmed === readinessSignature(items);
     const row = (i: ReadinessItem) => `<li class="readiness-${esc(i.status)}"><span class="pill ${i.status === 'passed' ? 'accepted' : i.status === 'failed' ? 'changed' : ''}">${esc(READINESS_STATUS[i.status])}</span><span>${esc(i.message)}</span>`
       + `${i.status === 'passed' ? '' : `<button class="text-button" data-action="tab" data-id="${esc(i.link.tab)}">去${esc(TAB_LABELS[i.link.tab])} →</button>`}</li>`;
     return `<div class="readiness"><h3>开拍清单</h3><p class="small">${counts.failed ? `<strong>${esc(counts.failed)} 项未通过</strong> · ` : ''}${esc(counts.warning)} 项提醒 · ${esc(counts.passed)} 项通过</p>`
@@ -221,7 +225,7 @@ export class ProductionPanel {
     const source = scriptLanguage(ctx.revision), bound = boundAdaptations(list, ctx.bundle.localizations);
     const available = list.voiceLanguages.filter(l => l === source || bound[l]);
     const chosen = (this.languages ?? available).filter(l => available.includes(l));
-    const items = this.readiness(ctx), open = items.filter(i => i.status !== 'passed'), ready = !open.length || this.readinessConfirmed === open.map(i => i.id).join('\n');
+    const items = this.readiness(ctx), open = items.filter(i => i.status !== 'passed'), ready = !open.length || this.readinessConfirmed === readinessSignature(items);
     const missing = list.voiceLanguages.filter(l => !available.includes(l));
     const sizes = RENDER_SIZES[list.aspectRatio], size = sizes.some(s => s.value === this.size) ? this.size : sizes[0]!.value;
     return `<section class="publication-panel"><div class="eyebrow">NEW RENDER BATCH</div><h2>生成渲染任务</h2>${this.readinessView(items, disabled)}
@@ -509,7 +513,7 @@ export class ProductionPanel {
       return true;
     }
     if (el.dataset.productionReadinessConfirm !== undefined && ctx) {
-      this.readinessConfirmed = (el as HTMLInputElement).checked ? this.readiness(ctx).filter(i => i.status !== 'passed').map(i => i.id).join('\n') : '';
+      this.readinessConfirmed = (el as HTMLInputElement).checked ? readinessSignature(this.readiness(ctx)) : '';
       this.hooks.render();
       return true;
     }

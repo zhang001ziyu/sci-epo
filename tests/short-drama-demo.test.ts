@@ -45,7 +45,8 @@ for (const [language, other] of [['en', 'zh-CN'], ['zh-CN', 'en']] as const) {
     const list = created.body as ShotList;
     expect(list).toMatchObject({mode: 'demo', aspectRatio: '9:16', voiceLanguages: [language, other], adaptations: {[other]: l.id}});
     expect(list.cast.map(c => c.name)).toEqual(language === 'en' ? ['MAYA', 'LEO'] : ['玛雅', '老林']);
-    expect(shotListWarnings(list, {revision: r, adaptations: boundAdaptations(list, [l])})).toEqual([]);
+    // The prepared list keeps one two-action shot (the phone buzzes, Maya reads), so the split prompt has an example.
+    expect(shotListWarnings(list, {revision: r, adaptations: boundAdaptations(list, [l])}).map(w => [w.kind, w.shotId, w.splitAt])).toEqual([['multiple_actions', 'sh8', 2]]);
     expect((await h.call(`/api/revisions/${r.id}/review`, {mode: 'demo'})).status).toBe(200);
   });
 }

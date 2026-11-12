@@ -6,6 +6,7 @@ import { EMPTY_PROFILE, RENDER_RESULTS_FORMAT, RenderPlanError, parseProductionP
 import { normalizeSpeakerName } from '../core/scriptLines';
 import { planJobsV2, takeSeed } from '../core/renderPlan';
 import { readinessItems, unconfirmedItems } from '../core/readiness';
+import { confirmedBible } from '../core/bible';
 import { boundAdaptations, shotListStatus } from '../core/shotList';
 import type { MediaStore } from './media';
 import { DEFAULT_STACK_ID, RENDER_SIZES, type Stacks } from './stacks';
@@ -58,7 +59,8 @@ export class Production {
     const project = this.store.get('projects', episode.projectId) ?? this.fail(404, '找不到系列。');
     const revision = episode.acceptedRevisionId ? this.store.get('revisions', episode.acceptedRevisionId) : undefined;
     const list = episode.productionShotListId ? this.store.get('shot_lists', episode.productionShotListId) : undefined;
-    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), reviews: this.store.all('reviews').filter(r => r.revisionId === revision?.id),
+    const shotReview = list ? this.store.get('shot_reviews', list.id) : undefined;
+    return readinessItems({episode, ...(revision ? {revision} : {}), ...(list ? {list} : {}), ...(shotReview ? {shotReview} : {}), reviews: this.store.all('reviews').filter(r => r.revisionId === revision?.id),
       localizations: this.store.all('localizations').filter(l => l.sourceRevisionId === revision?.id), ...(project.production ? {profile: project.production} : {}), ...(languages ? {languages} : {})});
   }
 
@@ -148,6 +150,12 @@ export class Production {
     return batch;
   }
 
+  /** The confirmed bible of the revision, as plan input: places and props go into every clip's first shot. */
+  private bibleOf(episode: Episode, revision: Revision) {
+    const bible = confirmedBible(episode, revision);
+    return bible ? {bible: {locations: bible.locations, props: bible.props, scenes: bible.scenes}} : {};
+  }
+
   private createBatch(listId: string, body: Record<string, unknown>) {
     const list = this.store.get('shot_lists', listId) ?? this.fail(404, '找不到分镜表。');
     const episode = this.store.get('episodes', list.episodeId) ?? this.fail(404, '找不到集数。');
@@ -160,7 +168,7 @@ export class Production {
     const createdAt = this.now();
     let plan;
     try {
-      plan = planRenderBatch({batchId: this.id(), createdAt, episodeId: episode.id, list, revision, adaptations: boundAdaptations(list, this.store.all('localizations')), profile: project.production ?? EMPTY_PROFILE, ...(languages ? {languages} : {}), ...(clipLimitSeconds !== undefined ? {clipLimitSeconds} : {})});
+      plan = planRenderBatch({batchId: this.id(), createdAt, episodeId: episode.id, list, revision, adaptations: boundAdaptations(list, this.store.all('localizations')), profile: project.production ?? EMPTY_PROFILE, ...this.bibleOf(episode, revision), ...(languages ? {languages} : {}), ...(clipLimitSeconds !== undefined ? {clipLimitSeconds} : {})});
     } catch (error) { if (error instanceof RenderPlanError) return this.fail(400, error.message); throw error; }
     const {batch, jobs} = plan;
     this.store.db.transaction(() => {
@@ -208,7 +216,7 @@ export class Production {
     const createdAt = this.now();
     let plan;
     try {
-      plan = planRenderBatch({batchId: this.id(), createdAt, episodeId: episode.id, list, revision, adaptations: boundAdaptations(list, this.store.all('localizations')), profile: planning, size, musicMode,
+      plan = planRenderBatch({batchId: this.id(), createdAt, episodeId: episode.id, list, revision, adaptations: boundAdaptations(list, this.store.all('localizations')), profile: planning, size, musicMode, ...this.bibleOf(episode, revision),
         ...(input.languages ? {languages: input.languages} : {}), ...(input.clipLimitSeconds !== undefined ? {clipLimitSeconds: input.clipLimitSeconds} : {})});
     } catch (error) { if (error instanceof RenderPlanError) return this.fail(400, error.message); throw error; }
     const {clips, jobs} = planJobsV2(plan.batch, preset, references, episode.ordinal);

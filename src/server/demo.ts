@@ -25,6 +25,7 @@ export const demoProvider:ModelProvider={mode:'demo',async complete(req:ModelReq
  const language=req.revision?.language??req.context.brief.language??'zh-CN',en=language==='en';
  if(!['en','zh-CN'].includes(language))throw new DemoError('固定演示仅提供英文和简体中文。其他语言请使用真实模型。');
  if(req.kind==='generate')return JSON.stringify(isShortDrama(req.context.brief)?SHORT_DRAMA_DEMO[en?'en':'zh']:output(en));
+ if(req.kind==='bible')throw new DemoError('示例演练不起草本集设定。请用真实模型起草，或点“按场景标题新建”后手动填写。');
  const revision=req.revision;
  if(revision&&[SHORT_DRAMA_DEMO.en.title,SHORT_DRAMA_DEMO.zh.title].includes(revision.title)){
   if(!isShortDramaDemo(revision,en?'en':'zh'))throw new DemoError('预置短剧示例只适用于未改动的固定样例；自写或已修改剧本请使用真实模型。');

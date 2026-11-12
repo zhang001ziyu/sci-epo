@@ -2,7 +2,8 @@
  * Deterministic and model-free, so every prompt is checked against the script before a worker sees it.
  * Formats follow MiniMax's official H3 prompt guides: base T2VA and full-reference R2V.
  * Browser-safe: no Node.js modules, so the workspace can reuse the constants and names. */
-import type { Localization, ProductionCharacter, ProductionProfile, RenderBatch, RenderClip, RenderJob, RenderPrompt, Revision, Shot, ShotList } from '../types';
+import type { BibleContent, Localization, ProductionCharacter, ProductionProfile, RenderBatch, RenderClip, RenderJob, RenderPrompt, Revision, Shot, ShotList } from '../types';
+import { settingSentences } from './bible';
 import { scriptLanguage } from './languages';
 import { dialoguePositions, inlineLabel, labelOnly, normalizeSpeakerName, scriptLines } from './scriptLines';
 
@@ -162,6 +163,8 @@ export interface RenderPlanInput {
   size?: {width: number; height: number};
   /** `bed`: clips get no non-diegetic music, because the cut lays one track under the episode. */
   musicMode?: 'bed' | 'native';
+  /** The confirmed episode bible: the first shot of every clip names its scene's setting and props. */
+  bible?: BibleContent;
 }
 export interface PlannedJob { clipId: string; language: string; order: number }
 
@@ -186,6 +189,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     const line = text.lines.get(shot.sceneId)?.[position - 1] ?? '';
     if (UNSAFE.test(line)) reject(`场景 ${shot.sceneId} 第 ${position} 行（${text.language}）含有 <、> 或 [Shot，它们在 H3 提示词里有特殊含义。请先修改剧本。`);
   }
+  for (const scene of revision.scenes) for (const line of input.bible ? settingSentences(input.bible, scene.id) : []) if (UNSAFE.test(line)) reject(`本集设定里场景 ${scene.id} 的描述含有 <、> 或 [Shot。请先修改本集设定。`);
   for (const shot of list.shots) for (const note of [shot.composition, shot.sound]) if (note && UNSAFE.test(note)) reject(`镜头 ${shot.id} 的构图或声音说明含有 <、> 或 [Shot。请先修改分镜表。`);
   for (const shot of list.shots) for (const [position, speaker] of picture.dialogue.get(shot.sceneId) ?? new Map<number, string>()) {
     if (position >= shot.firstLine && position <= shot.lastLine && !shot.spoken.some(s => s.line === position)) warnings.push(`场景 ${shot.sceneId} 第 ${position} 行像是 ${speaker} 的台词，但分镜表没有标说话人；H3 不会念这一行。`);
@@ -231,6 +235,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
           ? (mode === 't2va' ? `[Shot 1] ${style}, ${SIZE_PHRASES[shot.size]} in a ${orientation} frame.` : `[Shot 1] ${capitalize(SIZE_PHRASES[shot.size])} in a ${orientation} frame.`)
           : `[Shot ${index + 1}] At ${cutStamp(starts[index]!)}, the camera cuts to ${SIZE_PHRASES[shot.size]}.`;
         const parts = [head];
+        if (index === 0 && input.bible) parts.push(...settingSentences(input.bible, shot.sceneId));
         for (const id of shot.characters) if (!introduced.has(id)) {
           introduced.add(id);
           const appearance = characterOf(id)?.appearance;
