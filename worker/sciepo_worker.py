@@ -19,7 +19,8 @@ Backends (package, pull and serve)
 
 In package, pull and serve modes, videos and results.json are written to the output folder and nothing is
 uploaded except job status. A session sets up the pinned stack, renders takes, checks them and uploads the
-videos and QA files to Sci-epo's media store.
+videos and QA files to Sci-epo's media store. With Drive storage it puts the videos in the Google Drive of the
+runtime's account instead (QA files still go to Sci-epo) and also makes cuts with the ffmpeg arguments Sci-epo builds.
 The core is standard library only; Python 3.10 or later. Optional packages are imported only when used.
 """
 from __future__ import annotations
@@ -1559,6 +1560,411 @@ def qa_take(path: Path, take: dict, extra: dict | None = None) -> tuple[dict, di
     return summary, {'contactSheet': sheet, 'keyframes': keyframes, 'qa': qa_path, 'seconds': round(duration, 3)}
 
 
+# --------------------------------------------------------------------------- render sessions: Google Drive
+
+DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
+DRIVE_API = 'https://www.googleapis.com/drive/v3'
+DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
+DRIVE_FOLDER_TYPE = 'application/vnd.google-apps.folder'
+DRIVE_ID = re.compile(r'^[A-Za-z0-9_-]{1,200}$')
+DRIVE_CHUNK = 8 * MB        # resumable upload chunk; a multiple of 256 KiB, as Drive requires
+DRIVE_TIMEOUT_S = 300.0     # one Drive request
+DRIVE_TRIES = 6             # tries of one Drive request when no deadline is given
+DRIVE_AUTH_HELP = ('Google Drive is not authorized on this runtime. Run the notebook cell again from the start: '
+                   'it asks for Google authorization before it starts the worker')
+
+
+def open_drive_session() -> Any:
+    """An AuthorizedSession with the runtime's Google credentials (on Colab: auth.authenticate_user() in the notebook).
+    google-auth is imported only here, so the worker runs without it when videos stay in Sci-epo's media store."""
+    try:
+        import google.auth  # noqa: PLC0415 - optional, Colab has it
+        from google.auth.transport.requests import AuthorizedSession  # noqa: PLC0415
+    except ImportError as error:
+        raise WorkerError(f'google-auth is not installed ({error}); it is needed to store videos in Google Drive') from error
+    try:
+        credentials, _ = google.auth.default(scopes=[DRIVE_SCOPE])
+    except Exception as error:  # noqa: BLE001 - DefaultCredentialsError and the like
+        raise WorkerError(f'{DRIVE_AUTH_HELP} ({type(error).__name__}: {scrub(error)[:200]})') from error
+    return AuthorizedSession(credentials)
+
+
+def drive_quote(text: str) -> str:
+    """A value inside '…' in a Drive search query."""
+    return text.replace('\\', '\\\\').replace("'", "\\'")
+
+
+def drive_json(response: Any) -> dict:
+    try:
+        data = response.json()
+    except Exception:  # noqa: BLE001 - an empty or non-JSON body
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def drive_error(response: Any) -> str:
+    error = drive_json(response).get('error')
+    if isinstance(error, dict) and isinstance(error.get('message'), str):
+        return scrub(error['message'])[:200]
+    try:
+        return scrub(str(response.text))[:200]
+    except Exception:  # noqa: BLE001
+        return ''
+
+
+def drive_rate_limited(status: int, response: Any) -> bool:
+    """Drive answers some rate limits with 403 and a reason instead of 429."""
+    if status != 403:
+        return False
+    errors = (drive_json(response).get('error') or {}).get('errors') or []
+    return any(isinstance(e, dict) and e.get('reason') in ('rateLimitExceeded', 'userRateLimitExceeded') for e in errors)
+
+
+def drive_header(response: Any, name: str) -> str:
+    headers = getattr(response, 'headers', None) or {}
+    return str(headers.get(name) or headers.get(name.lower()) or '')
+
+
+def close_response(response: Any) -> None:
+    try:
+        response.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def drive_target(value: Any, what: str) -> tuple[list[str], bool]:
+    """The folder path under My Drive and whether to share by link, from Sci-epo's {folder: [names…], share: 'link'}."""
+    folder = value.get('folder') if isinstance(value, dict) else None
+    if not (isinstance(folder, list) and len(folder) <= 20 and all(
+            isinstance(name, str) and name.strip() and len(name) <= 255 and not any(ord(c) < 32 for c in name) for name in folder)):
+        raise WorkerError(f'Sci-epo sent no valid Google Drive folder for the {what}')
+    share = value.get('share')
+    if share not in (None, 'link'):
+        raise WorkerError(f'Sci-epo asked to share the {what} in an unknown way: {str(share)[:40]!r}')
+    return list(folder), share == 'link'
+
+
+class DriveClient:
+    """The Google Drive REST v3 calls a session needs: the signed-in account, folders, resumable uploads, link sharing
+    and downloads. The HTTP session is a requests-style session (google-auth's AuthorizedSession); tests pass a fake."""
+
+    def __init__(self, session: Any = None, tries: int = DRIVE_TRIES):
+        self._session, self.tries = session, tries
+        self.folders: dict[tuple[str, ...], str] = {}
+
+    @property
+    def session(self) -> Any:
+        if self._session is None:
+            self._session = open_drive_session()
+        return self._session
+
+    def send(self, method: str, url: str, **kwargs: Any) -> tuple[int, Any]:
+        """One request. A network problem raises NetworkError, missing authorization WorkerError."""
+        try:
+            response = self.session.request(method, url, timeout=DRIVE_TIMEOUT_S, **kwargs)
+        except WorkerError:
+            raise
+        except Exception as error:  # noqa: BLE001 - requests, urllib3 and google-auth raise their own classes
+            if type(error).__name__ in ('RefreshError', 'DefaultCredentialsError', 'ReauthFailError'):
+                raise WorkerError(f'{DRIVE_AUTH_HELP} ({type(error).__name__}: {scrub(error)[:200]})') from error
+            if isinstance(error, OSError) or type(error).__module__.startswith(('requests', 'urllib3', 'google.auth')):
+                raise NetworkError(f'cannot reach Google Drive: {scrub(error)[:200]}') from error
+            raise
+        return int(response.status_code), response
+
+    def gave_up(self, delay: float, count: int, until: float | None) -> bool:
+        return time.monotonic() + delay > until if until is not None else count >= self.tries
+
+    def call(self, what: str, method: str, url: str, until: float | None = None, ok: tuple[int, ...] = (200,), **kwargs: Any) -> Any:
+        """A request retried after network errors, 408, 425, 429, 5xx and rate-limit answers, with the session's back-off,
+        until the deadline (or the tries) run out. Returns the response; raises WorkerError with Drive's message."""
+        delay, count = UPLOAD_BACKOFF_S, 0
+        while True:
+            count += 1
+            failure: NetworkError | None = None
+            try:
+                status, response = self.send(method, url, **kwargs)
+                if status in ok:
+                    return response
+                problem = f'HTTP {status}: {drive_error(response)}'
+                retry = status in RETRYABLE or drive_rate_limited(status, response)
+                close_response(response)
+                if status == 401:
+                    raise WorkerError(f'{DRIVE_AUTH_HELP} (Google Drive answered HTTP 401 while {what})')
+                if not retry:
+                    raise WorkerError(f'Google Drive answered {problem} while {what}')
+            except NetworkError as error:
+                failure, problem = error, str(error)
+            if self.gave_up(delay, count, until):
+                if failure is not None:
+                    raise NetworkError(f'{what}: {failure}') from failure
+                raise WorkerError(f'Google Drive answered {problem} while {what}, {count} times')
+            log(f'{what} failed ({problem}); trying again in {delay:.1f} s')
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
+
+    def check(self) -> str:
+        """The signed-in account. It is printed on the runtime only and never sent to Sci-epo."""
+        response = self.call('reading the signed-in account', 'GET', f'{DRIVE_API}/about', params={'fields': 'user(emailAddress)'})
+        user = drive_json(response).get('user')
+        return str((user or {}).get('emailAddress') or 'an account without an address') if isinstance(user, dict) else 'an unknown account'
+
+    def folder(self, path: list[str], until: float | None = None) -> str:
+        """The id of the folder path under My Drive; missing folders are created. Ids are remembered."""
+        parent = 'root'
+        for depth, name in enumerate(path, start=1):
+            key = tuple(path[:depth])
+            if key in self.folders:
+                parent = self.folders[key]
+                continue
+            query = (f"name = '{drive_quote(name)}' and '{drive_quote(parent)}' in parents and mimeType = '{DRIVE_FOLDER_TYPE}' "
+                     f'and trashed = false')
+            response = self.call(f'looking for the Drive folder {name}', 'GET', f'{DRIVE_API}/files', until=until,
+                                 params={'q': query, 'fields': 'files(id,name)', 'spaces': 'drive', 'orderBy': 'createdTime', 'pageSize': 10})
+            found = [f['id'] for f in drive_json(response).get('files') or [] if isinstance(f, dict) and isinstance(f.get('id'), str)]
+            if found:
+                folder_id = found[0]
+            else:
+                response = self.call(f'creating the Drive folder {name}', 'POST', f'{DRIVE_API}/files', until=until,
+                                     params={'fields': 'id'}, json={'name': name, 'mimeType': DRIVE_FOLDER_TYPE, 'parents': [parent]})
+                folder_id = drive_json(response).get('id')
+                if not isinstance(folder_id, str) or not DRIVE_ID.fullmatch(folder_id):
+                    raise WorkerError(f'Google Drive did not say which folder it created for {name}')
+                log(f'created the Drive folder {"/".join(key)}')
+            self.folders[key] = parent = folder_id
+        return parent
+
+    def upload(self, path: Path, name: str, folder_id: str, until: float | None = None) -> dict:
+        """Upload a video with a resumable upload in DRIVE_CHUNK pieces; returns {id, name}."""
+        path = Path(path)
+        size = path.stat().st_size
+        if size == 0:
+            raise WorkerError(f'{path.name} is empty; it was not uploaded')
+        for _ in range(2):  # a second upload session when Drive forgets the first one
+            response = self.call(f'starting the upload of {name}', 'POST', DRIVE_UPLOAD, until=until,
+                                 params={'uploadType': 'resumable', 'fields': 'id,name'},
+                                 json={'name': name, 'parents': [folder_id], 'mimeType': 'video/mp4'},
+                                 headers={'X-Upload-Content-Type': 'video/mp4', 'X-Upload-Content-Length': str(size)})
+            location = drive_header(response, 'Location')
+            close_response(response)
+            if not location.startswith('https://'):
+                raise WorkerError(f'Google Drive did not start an upload session for {name}')
+            found = self.send_chunks(location, path, name, size, until)
+            if found is not None:
+                return found
+            log(f'Google Drive no longer knows the upload session of {name}; starting again')
+        raise WorkerError(f'Google Drive lost the upload of {name} twice')
+
+    def send_chunks(self, location: str, path: Path, name: str, size: int, until: float | None) -> dict | None:
+        """PUT the bytes from the offset Drive has; None when the upload session is gone (404 or 410)."""
+        offset: int | None = 0
+        delay, count = UPLOAD_BACKOFF_S, 0
+        with open(path, 'rb') as handle:
+            while True:
+                problem, failure = '', None
+                try:
+                    if offset is None:  # after a failure: ask Drive how much it has
+                        status, response = self.send('PUT', location, data=b'', headers={'Content-Range': f'bytes */{size}', 'Content-Length': '0'})
+                    else:
+                        handle.seek(offset)
+                        chunk = handle.read(DRIVE_CHUNK)
+                        status, response = self.send('PUT', location, data=chunk, headers={
+                            'Content-Range': f'bytes {offset}-{offset + len(chunk) - 1}/{size}', 'Content-Length': str(len(chunk))})
+                except NetworkError as error:
+                    status, response, failure, problem = 0, None, error, str(error)
+                if status in (200, 201):
+                    found = drive_json(response)
+                    close_response(response)
+                    if not (isinstance(found.get('id'), str) and DRIVE_ID.fullmatch(found['id'])):
+                        raise WorkerError(f'Google Drive did not say which file it made of {name}')
+                    return {'id': found['id'], 'name': str(found.get('name') or name)}
+                if status == 308:  # resume incomplete: Range says what Drive has
+                    held = drive_header(response, 'Range')
+                    close_response(response)
+                    offset = int(held.rpartition('-')[2]) + 1 if re.fullmatch(r'bytes=0-\d+', held) else 0
+                    delay, count = UPLOAD_BACKOFF_S, 0
+                    continue
+                if status in (404, 410):
+                    close_response(response)
+                    return None
+                if status:
+                    problem = f'HTTP {status}: {drive_error(response)}'
+                    retry = status in RETRYABLE or drive_rate_limited(status, response)
+                    close_response(response)
+                    if status == 401:
+                        raise WorkerError(f'{DRIVE_AUTH_HELP} (Google Drive answered HTTP 401 while uploading {name})')
+                    if not retry:
+                        raise WorkerError(f'Google Drive answered {problem} while uploading {name}')
+                count += 1
+                if self.gave_up(delay, count, until):
+                    if failure is not None:
+                        raise NetworkError(f'uploading {name}: {failure}') from failure
+                    raise WorkerError(f'Google Drive answered {problem} while uploading {name}, {count} times')
+                log(f'uploading {name} to Google Drive failed ({problem}); trying again in {delay:.1f} s')
+                time.sleep(delay)
+                delay, offset = min(delay * 2, 60.0), None
+
+    def share_link(self, file_id: str, until: float | None = None) -> None:
+        """Anyone with the link can view the file."""
+        response = self.call('sharing the video by link', 'POST', f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}/permissions",
+                             until=until, params={'fields': 'id'}, json={'type': 'anyone', 'role': 'reader'})
+        close_response(response)
+
+    def download(self, file_id: str, dest: Path, sha256: str, limit: int, until: float | None = None) -> None:
+        """Download a Drive file to dest through dest.part; its size must be `limit` bytes and its SHA-256 `sha256`."""
+        dest = Path(dest)
+        part = dest.with_name(dest.name + '.part')
+        url = f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}"
+        delay, count = UPLOAD_BACKOFF_S, 0
+        try:
+            while True:
+                count += 1
+                response = self.call(f'downloading {dest.name}', 'GET', url, until=until, params={'alt': 'media'}, stream=True)
+                digest, size = hashlib.sha256(), 0
+                try:
+                    with open(part, 'wb') as out:
+                        for chunk in response.iter_content(chunk_size=MB):
+                            if not chunk:
+                                continue
+                            size += len(chunk)
+                            if size > limit:
+                                raise WorkerError(f'{dest.name} in Google Drive is larger than Sci-epo said ({limit} bytes)')
+                            digest.update(chunk)
+                            out.write(chunk)
+                except WorkerError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - the connection broke while the file streamed
+                    if not (isinstance(error, OSError) or type(error).__module__.startswith(('requests', 'urllib3'))):
+                        raise
+                    if self.gave_up(delay, count, until):
+                        raise NetworkError(f'downloading {dest.name} from Google Drive: {scrub(error)[:200]}') from error
+                    log(f'downloading {dest.name} from Google Drive broke off ({scrub(error)[:200]}); trying again in {delay:.1f} s')
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                finally:
+                    close_response(response)
+                break
+            if size != limit:
+                raise WorkerError(f'{dest.name} in Google Drive has {size} bytes, not the {limit} Sci-epo said; it was not used')
+            if digest.hexdigest() != sha256:
+                raise WorkerError(f'{dest.name} in Google Drive does not match its SHA-256; it was not used')
+            os.replace(part, dest)
+        finally:
+            part.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- render sessions: cuts
+
+CUT_FONT = 'caption-font.ttc'
+CUT_OUTPUT = 'cut.mp4'
+STDERR_TAIL = 64 * 1024
+CUT_TIMEOUT_S = 3600.0      # each ffmpeg call of a cut when Sci-epo gives no timeout
+FONT_INSTALL_S = 600.0
+CJK_FONT_FILES = ('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+                  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc', '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
+                  '/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc', '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+                  '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', '/System/Library/Fonts/PingFang.ttc',
+                  '/System/Library/Fonts/STHeiti Medium.ttc')
+CJK_WINDOWS_FONTS = ('msyh.ttc', 'simhei.ttf', 'simsun.ttc')
+
+
+class CutInterrupted(Exception):
+    """The author stopped the session at once, or Sci-epo ended it, while a cut was in hand."""
+
+
+def cjk_font() -> Path | None:
+    """A font file with Chinese characters: $SCIEPO_CAPTION_FONT, else a Noto CJK (or similar) font of this system."""
+    named = os.environ.get('SCIEPO_CAPTION_FONT')
+    if named and Path(named).is_file():
+        return Path(named)
+    if os.name == 'nt':
+        fonts = Path(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+        candidates = [fonts / name for name in CJK_WINDOWS_FONTS]
+    else:
+        candidates = [Path(p) for p in CJK_FONT_FILES]
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def caption_font() -> Path | None:
+    """cjk_font(), after installing fonts-noto-cjk with apt-get when none is there and the worker runs as root (Colab)."""
+    found = cjk_font()
+    apt = shutil.which('apt-get')
+    if found or os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0 or not apt:
+        return found
+    log(f'no font with Chinese characters is installed; installing fonts-noto-cjk with apt-get (up to {FONT_INSTALL_S / 60:.0f} minutes)')
+    env = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
+    for command in ([apt, 'install', '-y', '-q', 'fonts-noto-cjk'], [apt, 'update', '-q'], [apt, 'install', '-y', '-q', 'fonts-noto-cjk']):
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=FONT_INSTALL_S, env=env)
+        except (OSError, subprocess.SubprocessError) as error:
+            log(f"{' '.join(command[1:])} failed: {error}")
+            continue
+        if done.returncode != 0:
+            log(f"apt-get {' '.join(command[1:])} exited with {done.returncode}: {' | '.join((done.stderr or '').strip().splitlines()[-2:])[:300]}")
+        elif command[1] == 'install':
+            break
+    found = cjk_font()
+    log(f'caption font: {found}' if found else 'fonts-noto-cjk could not be installed')
+    return found
+
+
+def ffmpeg_args(value: Any, what: str) -> list[str]:
+    """Arguments from Sci-epo for ffmpeg: a list of strings, run without a shell."""
+    if not (isinstance(value, list) and 0 < len(value) <= 10_000 and all(isinstance(a, str) and '\x00' not in a for a in value)):
+        raise WorkerError(f'Sci-epo sent {what} that is not a list of ffmpeg arguments')
+    return value
+
+
+def tail_text(path: Path, limit: int = STDERR_TAIL) -> str:
+    """The last `limit` bytes of a log file as text, starting at a whole line."""
+    try:
+        size = path.stat().st_size
+        with open(path, 'rb') as handle:
+            handle.seek(max(0, size - limit))
+            text = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return ''
+    return text.partition('\n')[2] if size > limit else text
+
+
+def last_lines(text: str, count: int = 3) -> str:
+    return ' | '.join(text.strip().splitlines()[-count:])[:400]
+
+
+def check_cut(cut: dict) -> dict:
+    """Validate a claimed cut. Names are plain file names in the cut folder, each used once."""
+    def file_entry(item: Any, what: str, drive: bool) -> dict:
+        ok = (isinstance(item, dict) and isinstance(item.get('name'), str) and SAFE_NAME.fullmatch(item['name'])
+              and isinstance(item.get('sha256'), str) and SHA256_HEX.fullmatch(item['sha256'])
+              and isinstance(item.get('bytes'), int) and not isinstance(item['bytes'], bool) and item['bytes'] > 0)
+        if ok and drive:
+            ref = item.get('drive')
+            ok = isinstance(ref, dict) and isinstance(ref.get('id'), str) and bool(DRIVE_ID.fullmatch(ref['id']))
+        if not ok:
+            raise WorkerError(f'the cut has an invalid {what}: {scrub(str(item))[:120]}')
+        return item
+    inputs = cut.get('inputs')
+    if not isinstance(inputs, list) or not inputs:
+        raise WorkerError('the cut has no input clips')
+    inputs = [file_entry(item, 'input clip', True) for item in inputs]
+    music = file_entry(cut['music'], 'music file', False) if cut.get('music') is not None else None
+    captions = cut.get('captions') or []
+    if not isinstance(captions, list) or not all(isinstance(c, dict) and isinstance(c.get('name'), str) and SAFE_NAME.fullmatch(c['name'])
+                                                 and isinstance(c.get('text'), str) and len(c['text']) <= 20_000 for c in captions):
+        raise WorkerError('the cut has invalid caption files')
+    output = cut.get('output')
+    if not (isinstance(output, dict) and isinstance(output.get('name'), str) and SAFE_NAME.fullmatch(output['name'])):
+        raise WorkerError('the cut has no valid output name')
+    drive_target(output.get('drive'), 'cut')
+    names = [item['name'] for item in inputs] + ([music['name']] if music else []) + [c['name'] for c in captions]
+    if len(set(names)) != len(names) or any(n in (CUT_FONT, CUT_OUTPUT) or n.startswith('sciepo-') or n.endswith('.part') for n in names):
+        raise WorkerError('the files of the cut do not have distinct, usable names')
+    timeout = cut.get('timeoutSeconds')
+    timeout = float(timeout) if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0 else CUT_TIMEOUT_S
+    return {**cut, 'inputs': inputs, 'music': music, 'captions': captions, 'output': output, 'timeoutSeconds': min(timeout, 6 * 3600.0)}
+
+
 # --------------------------------------------------------------------------- render sessions: the worker
 
 class SessionClient(SciEpo):
@@ -1635,12 +2041,65 @@ class TakeWatch:
             worker.interrupt()
 
 
+class CutWatch:
+    """Heartbeats while one cut is in hand. They keep it with this session and bring the author's stop; a stop at once,
+    or the end of the session, kills the ffmpeg that runs and leaves the cut to Sci-epo, which queues it again."""
+
+    def __init__(self, worker: SessionWorker, cut_id: str):
+        self.worker, self.cut_id = worker, cut_id
+        self.done = threading.Event()
+        self.interrupted = False
+        self.process: subprocess.Popen | None = None
+        self.thread = threading.Thread(target=self.run, name=f'heartbeat cut {cut_id}', daemon=True)
+
+    def __enter__(self) -> CutWatch:
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.done.set()
+        self.thread.join(timeout=10)
+
+    def run(self) -> None:
+        worker = self.worker
+        while not self.done.wait(worker.heartbeat_s):
+            try:  # a heartbeat that fails must never end the thread
+                status, answer = worker.client.request('POST', ('cuts', self.cut_id, 'heartbeat'), {})
+                if status == 200 and isinstance(answer, dict):
+                    worker.note_stop(answer.get('stop'))
+                else:
+                    log(f'cut heartbeat answered HTTP {status}: {error_text(answer)}')
+            except SessionGone:
+                worker.gone = True
+            except Exception as error:  # noqa: BLE001
+                log(f'cut heartbeat failed: {error}')
+            if worker.stop_now or worker.gone:
+                self.interrupt()
+
+    def interrupt(self) -> None:
+        self.interrupted = True
+        process = self.process
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    def check(self) -> None:
+        if self.interrupted or self.worker.stop_now or self.worker.gone:
+            self.interrupted = True
+            raise CutInterrupted()
+
+
 class SessionWorker:
     """One render session: check the GPU, set up the pinned stack, then claim, render, check and deliver takes."""
 
-    def __init__(self, client: SessionClient, comfy_dir: Path, work_dir: Path, comfy_url: str, skip_setup: bool = False):
+    def __init__(self, client: SessionClient, comfy_dir: Path, work_dir: Path, comfy_url: str, skip_setup: bool = False,
+                 drive: DriveClient | None = None):
         self.client, self.comfy_dir, self.work_dir = client, Path(comfy_dir).expanduser().resolve(), Path(work_dir).expanduser().resolve()
         self.comfy_url, self.skip_setup = comfy_url.rstrip('/'), skip_setup
+        self.drive, self.storage = drive, 'media'
+        self.cuts_done = self.cuts_failed = 0
         self.refs_dir = self.work_dir / 'refs'
         self.upload_window, self.backoff = UPLOAD_WINDOW_S, UPLOAD_BACKOFF_S
         self.lock = threading.Lock()
@@ -1785,15 +2244,30 @@ class SessionWorker:
         self.heartbeat_s = min(300.0, max(0.1, float(settings.get('heartbeatSeconds') or 30)))
         self.budget_end = parse_time(settings.get('budgetEndsAt'))
         self.estimate_takes = int((doc.get('estimate') or {}).get('takes') or 0)
+        storage = doc.get('storage') if isinstance(doc.get('storage'), dict) else {}
+        self.storage = storage.get('video') or 'media'
+        if self.storage not in ('drive', 'media'):
+            raise WorkerError(f'this worker does not know the video storage {str(self.storage)[:40]!r}')
+        work = doc.get('work') if isinstance(doc.get('work'), dict) else {}
+        takes_left, cuts_left = (value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+                                 for value in (work.get('takes'), work.get('cuts')))
         self.event('connected', f'worker {program_sha256()[:12]}, Python {platform.python_version()}',
                    {'workerSha256': program_sha256(), 'python': platform.python_version()})
         log(f"session {self.session_id}: {self.mode}, budget {settings.get('budgetMinutes', '?')} min until {clock(self.budget_end)}, "
-            f'about {self.estimate_takes} takes')
+            f'about {self.estimate_takes} takes' + (f', {cuts_left} cuts' if cuts_left else ''))
+        if self.storage == 'drive':
+            self.connect_drive()
         modes = [m for m in doc.get('modes') or [] if isinstance(m, str)]
+        where = '; videos go to Google Drive' if self.storage == 'drive' else ''
         if self.mode == 'rehearsal':
             if not find_tool('ffmpeg'):
                 raise WorkerError('ffmpeg is not installed; a rehearsal makes its placeholder takes with ffmpeg')
-            self.event('ready', 'rehearsal: placeholder takes made with ffmpeg; no GPU and no models')
+            self.event('ready', f'rehearsal: placeholder takes made with ffmpeg; no GPU and no models{where}')
+        elif cuts_left and (takes_left == 0 or not modes):
+            # A cut needs ffmpeg only: no GPU check, no stack and no ComfyUI.
+            if not (find_tool('ffmpeg') and find_tool('ffprobe')):
+                raise WorkerError('ffmpeg and ffprobe are not installed; the cuts of this session are made with them')
+            self.event('ready', f"{cuts_left} cut{'s' if cuts_left != 1 else ''} waiting: ffmpeg only, no GPU and no ComfyUI{where}")
         else:
             stacks = [s for s in doc.get('stacks') or [] if isinstance(s, dict)]
             if not modes:
@@ -1831,9 +2305,20 @@ class SessionWorker:
             raise WorkerError('the server did not send a Sci-epo session document (format sciepo-session, version 1)')
         return doc
 
+    def connect_drive(self) -> None:
+        """Check the Google authorization before any work. The account is printed here only, never sent to Sci-epo."""
+        if self.drive is None:
+            self.drive = DriveClient()
+        try:
+            account = self.drive.check()
+        except NetworkError as error:
+            raise WorkerError(f'Google Drive cannot be reached from this runtime: {error}') from error
+        log(f'Google Drive: signed in as {account}; videos go to its My Drive and are shared by link')
+
     def finish(self, reason: str, message: str) -> None:
         minutes = (time.monotonic() - self.started) / 60
-        summary = f'{reason}: {self.rendered} rendered, {self.failed} failed, {len(self.undelivered)} undelivered, {minutes:.1f} min'
+        cuts = f', cuts: {self.cuts_done} done, {self.cuts_failed} failed' if self.cuts_done or self.cuts_failed else ''
+        summary = f'{reason}: {self.rendered} rendered, {self.failed} failed, {len(self.undelivered)} undelivered{cuts}, {minutes:.1f} min'
         summary += f'. {message}' if message else ''
         try:
             if not self.gone:
@@ -2066,7 +2551,7 @@ class SessionWorker:
     # ---------------------------------------------------------------- takes
 
     def loop(self) -> tuple[str, str]:
-        index, failures = 0, 0
+        index, failures, cut_failures = 0, 0, 0
         while True:
             if self.end_after:
                 return self.end_after
@@ -2074,7 +2559,18 @@ class SessionWorker:
                                              until=time.monotonic() + CLAIM_RETRY_S)
             if status != 200 or not isinstance(answer, dict):
                 raise WorkerError(f'cannot claim the next take (HTTP {status}): {error_text(answer)}')
-            if isinstance(answer.get('take'), dict):
+            if isinstance(answer.get('cut'), dict):
+                if self.storage != 'drive':
+                    raise WorkerError('Sci-epo handed out a cut, but this session does not keep videos in Google Drive')
+                outcome = self.process_cut(answer['cut'])
+                if outcome == 'interrupted':
+                    if self.gone:
+                        raise SessionGone(SessionClient.GONE)
+                    return self.end_after or ('stopped', 'the cut was interrupted')
+                cut_failures = 0 if outcome == 'done' else cut_failures + 1
+                if cut_failures >= 2:
+                    return 'failures', 'two cuts in a row failed or could not be delivered'
+            elif isinstance(answer.get('take'), dict):
                 index += 1
                 outcome = self.process_take(answer['take'], index)
                 if outcome == 'interrupted':
@@ -2122,6 +2618,8 @@ class SessionWorker:
         label = f"{take.get('output', job_id)} take {n}"
         try:
             job = self.job_for(take)
+            if self.storage == 'drive':  # before the render, which the take could not deliver
+                drive_target(take.get('drive'), 'take')
         except WorkerError as error:
             self.failed += 1
             return self.report_failure(take, label, f'invalid take: {error}', 0.0)
@@ -2225,15 +2723,44 @@ class SessionWorker:
         log(f'uploaded the {label}: {format_bytes(Path(path).stat().st_size)}')
         return answer['assetId']
 
+    def to_drive(self, path: Path, name: str, target: Any, until: float, what: str) -> dict:
+        """Upload a video to the Drive folder Sci-epo names, share it by link when asked; raises Undelivered.
+        Returns the result's video entry: {drive: {id, name}, sha256, bytes}."""
+        path = Path(path)
+        digest, size = file_sha256(path), path.stat().st_size
+        if self.drive is None:
+            raise Undelivered('Google Drive is not connected')
+        try:
+            folder, share = drive_target(target, what)
+            found = self.drive.upload(path, name, self.drive.folder(folder, until), until)
+            if share:
+                self.drive.share_link(found['id'], until)
+        except Undelivered:
+            raise
+        except WorkerError as error:
+            raise Undelivered(f'the {what} did not reach Google Drive: {error}') from error
+        log(f"uploaded the {what} to Google Drive: {'/'.join([*folder, found['name']])}, {format_bytes(size)}" + (', shared by link' if share else ''))
+        return {'drive': {'id': found['id'], 'name': found['name']}, 'sha256': digest, 'bytes': size}
+
     def deliver(self, take: dict, label: str, video: Path, summary: dict, files: dict, render_seconds: float) -> bool:
-        """Upload the video and the QA files and post the result, retrying for at most the upload window."""
+        """Upload the video and the QA files and post the result, retrying for at most the upload window.
+        With Drive storage the video goes to Google Drive and the QA files to Sci-epo."""
         deadline = time.monotonic() + self.upload_window
         soft = deadline - min(60.0, self.upload_window / 4)  # QA files leave time for the result
         extras = [p for p in [files.get('contactSheet'), *[k['path'] for k in files.get('keyframes') or []], files.get('qa')] if p]
-        total = Path(video).stat().st_size + sum(Path(p).stat().st_size for p in extras)
-        self.event('uploading', f'{label}: {format_bytes(total)}', {'jobId': take['jobId'], 'n': take['n'], 'bytes': total})
+        video_bytes, extra_bytes = Path(video).stat().st_size, sum(Path(p).stat().st_size for p in extras)
+        total = video_bytes + extra_bytes
+        drive = self.storage == 'drive'
+        message = (f'{label}: video {format_bytes(video_bytes)} to Google Drive, QA files {format_bytes(extra_bytes)} to Sci-epo' if drive
+                   else f'{label}: {format_bytes(total)}')
+        self.event('uploading', message, {'jobId': take['jobId'], 'n': take['n'], 'bytes': total})
         try:
-            video_asset = self.upload(take, 'video', video, deadline)
+            if drive:
+                video_entry = self.to_drive(video, Path(video).name, take.get('drive'), deadline, 'video')
+                head: dict[str, Any] = {'video': video_entry}
+                video_files: dict[str, Any] = {}
+            else:
+                head, video_files = {}, {'video': self.upload(take, 'video', video, deadline)}
             optional: dict[str, Any] = {'keyframes': []}
             for kind, key, path, shot in ([('contact-sheet', 'contactSheet', files['contactSheet'], None)] if files.get('contactSheet') else []) + \
                     [('keyframe', None, k['path'], k['shotId']) for k in files.get('keyframes') or []] + \
@@ -2250,7 +2777,7 @@ class SessionWorker:
                     optional[key] = asset
                 else:
                     optional['keyframes'].append({'shotId': shot, 'assetId': asset})
-            body = {'status': 'rendered', 'files': {'video': video_asset, **optional}, 'qa': summary,
+            body = {'status': 'rendered', **head, 'files': {**video_files, **optional}, 'qa': summary,
                     'seconds': round(float(files.get('seconds') or take['frames'] / float(take.get('fps') or 24)), 2),
                     'timing': {'renderSeconds': round(render_seconds, 1)}}
             try:
@@ -2263,9 +2790,196 @@ class SessionWorker:
             log(f'{label} was not delivered: {error}')
             self.event('error', f'{label} was not delivered: {error}', {'stage': 'uploading', 'jobId': take['jobId'], 'n': take['n']})
             return False
-        log(f"{label} delivered: video, {'contact sheet, ' if optional.get('contactSheet') else ''}{len(optional['keyframes'])} keyframes"
-            f"{', qa.json' if optional.get('qa') else ''}")
+        log(f"{label} delivered: video{' (Google Drive)' if drive else ''}, {'contact sheet, ' if optional.get('contactSheet') else ''}"
+            f"{len(optional['keyframes'])} keyframes{', qa.json' if optional.get('qa') else ''}")
         return True
+
+    # ---------------------------------------------------------------- cuts
+
+    def process_cut(self, cut: dict) -> str:
+        """Make one cut with the ffmpeg arguments Sci-epo builds and put it in Google Drive: 'done', 'failed',
+        'undelivered' (made, but Sci-epo did not take the result) or 'interrupted'."""
+        cut_id = cut.get('id')
+        if not (isinstance(cut_id, str) and ID_TEXT.fullmatch(cut_id)):
+            raise WorkerError('Sci-epo sent a cut without a valid id')
+        name = cut.get('output', {}).get('name') if isinstance(cut.get('output'), dict) else None
+        label = f'cut {name}' if isinstance(name, str) and SAFE_NAME.fullmatch(name) else f'cut {cut_id[:8]}'
+        folder = self.work_dir / 'cuts' / cut_id[:8]
+        started = time.monotonic()
+        with CutWatch(self, cut_id) as watch:
+            try:
+                try:
+                    spec = check_cut(cut)
+                    self.event('cutting', f"{label}: {len(spec['inputs'])} clips" + (', music' if spec['music'] else '') +
+                               (f", {len(spec['captions'])} caption files" if spec['captions'] else ''), {'cutId': cut_id, 'output': spec['output']['name']})
+                    body = self.make_cut(spec, folder, watch, label)
+                except CutInterrupted:
+                    log(f'{label} was not finished; Sci-epo queues it again when the session ends')
+                    return 'interrupted'
+                except Exception as error:  # noqa: BLE001 - a failed cut is reported, not raised
+                    if watch.interrupted or self.gone:
+                        log(f'{label} was not finished; Sci-epo queues it again when the session ends')
+                        return 'interrupted'
+                    message = scrub(str(error) if isinstance(error, WorkerError) else f'unexpected {type(error).__name__}: {error}')
+                    self.cuts_failed += 1
+                    log(f'{label} failed: {message}')
+                    self.event('error', f'{label}: {message}', {'stage': 'cutting', 'cutId': cut_id})
+                    self.report_cut(cut_id, {'status': 'failed', 'error': message[:500]}, label)
+                    return 'failed'
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+            if not self.report_cut(cut_id, body, label):
+                self.cuts_failed += 1
+                return 'undelivered'
+        self.cuts_done += 1
+        log(f"{label} done in {time.monotonic() - started:.0f} s: {body['seconds']:.1f} s, {format_bytes(body['bytes'])}"
+            + (f", {len(body['warnings'])} warnings" if body['warnings'] else ''))
+        return 'done'
+
+    def report_cut(self, cut_id: str, body: dict, label: str) -> bool:
+        deadline = time.monotonic() + self.upload_window
+        try:
+            status, answer = self.with_retry(f'reporting {label}', lambda: self.client.request('POST', ('cuts', cut_id, 'result'), body), until=deadline)
+        except NetworkError as error:
+            status, answer = 0, str(error)
+        if status == 200:
+            return True
+        log(f'Sci-epo did not take the result of {label} (HTTP {status}): {error_text(answer)}')
+        self.event('error', f'{label}: Sci-epo did not take the result (HTTP {status})', {'stage': 'uploading', 'cutId': cut_id})
+        return False
+
+    def cut_args(self, cut_id: str, payload: dict) -> dict:
+        status, answer = self.with_retry('asking for the ffmpeg arguments of the cut',
+                                         lambda: self.client.request('POST', ('cuts', cut_id, 'args'), payload), tries=4)
+        if status != 200 or not isinstance(answer, dict):
+            raise WorkerError(f'Sci-epo did not give the ffmpeg arguments of the cut (HTTP {status}): {error_text(answer)}')
+        return answer
+
+    def download_music(self, cut_id: str, music: dict, dest: Path) -> None:
+        found: dict[str, Any] = {}
+
+        def attempt() -> tuple[int, Any]:
+            status, digest, size = self.client.download(('cuts', cut_id, 'music'), dest, music['bytes'])
+            found.update(digest=digest, size=size)
+            return status, None
+        status, _ = self.with_retry(f"downloading the music {music['name']}", attempt, tries=4)
+        if status != 200:
+            raise WorkerError(f"cannot download the music {music['name']} (HTTP {status})")
+        if found.get('digest') != music['sha256'] or found.get('size') != music['bytes']:
+            dest.unlink(missing_ok=True)
+            raise WorkerError(f"the music {music['name']} does not match its SHA-256; it was not used")
+
+    def run_ffmpeg(self, ffmpeg: str, args: list[str], folder: Path, timeout: float, log_name: str, watch: CutWatch) -> tuple[int, str]:
+        """Run ffmpeg with Sci-epo's arguments in the cut folder, without a shell; returns the exit code and the stderr tail."""
+        watch.check()
+        log_path = folder / log_name
+        log('$ ffmpeg ' + ' '.join(shlex.quote(a) for a in args)[:400])
+        with open(log_path, 'wb') as stderr:
+            try:
+                process = subprocess.Popen([ffmpeg, *args], cwd=str(folder), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
+            except (OSError, ValueError) as error:
+                raise WorkerError(f'cannot run ffmpeg: {error}') from error
+            watch.process = process
+            try:
+                if watch.interrupted:
+                    process.kill()
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                raise WorkerError(f'ffmpeg did not finish within {timeout / 60:.0f} minutes') from error
+            finally:
+                watch.process = None
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+        watch.check()
+        return code, tail_text(log_path)
+
+    def make_cut(self, cut: dict, folder: Path, watch: CutWatch, label: str) -> dict:
+        """Download the inputs, run Sci-epo's two ffmpeg passes, measure the cut and upload it; returns the done result."""
+        ffmpeg, ffprobe = find_tool('ffmpeg'), find_tool('ffprobe')
+        if not ffmpeg or not ffprobe:
+            raise WorkerError('ffmpeg and ffprobe are needed to make a cut')
+        if self.drive is None:
+            raise WorkerError('Google Drive is not connected')
+        timeout = cut['timeoutSeconds']
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir(parents=True)
+        for item in cut['inputs']:
+            watch.check()
+            self.drive.download(item['drive']['id'], folder / item['name'], item['sha256'], item['bytes'])
+            log(f"input {item['name']}: {format_bytes(item['bytes'])} from Google Drive, SHA-256 checked")
+        if cut['music']:
+            watch.check()
+            self.download_music(cut['id'], cut['music'], folder / cut['music']['name'])
+            log(f"music {cut['music']['name']}: {format_bytes(cut['music']['bytes'])}, SHA-256 checked")
+        for caption in cut['captions']:
+            (folder / caption['name']).write_bytes(caption['text'].encode('utf-8'))
+        font = False
+        if cut['captions']:
+            found = caption_font()
+            if found:
+                shutil.copyfile(found, folder / CUT_FONT)
+                font = True
+            else:
+                log('no font with Chinese characters was found; Sci-epo decides how the captions are drawn without one')
+        watch.check()
+        audio = {item['name']: self.has_audio(ffprobe, folder / item['name']) for item in cut['inputs']}
+        first = self.cut_args(cut['id'], {'audio': audio, 'font': font})
+        measured = ''
+        if first.get('args') is not None:
+            code, measured = self.run_ffmpeg(ffmpeg, ffmpeg_args(first.get('args'), 'a measurement pass'), folder, timeout, 'sciepo-pass1.log', watch)
+            if code != 0:
+                raise WorkerError(f'ffmpeg failed in the measurement pass (exit code {code}): {last_lines(measured)}')
+        second = self.cut_args(cut['id'], {'audio': audio, 'font': font, 'measured': measured})
+        render = ffmpeg_args(second.get('args'), 'a render pass')
+        fallback = ffmpeg_args(second['fallback'], 'a fallback pass') if second.get('fallback') is not None else None
+        warnings = [scrub(text)[:500] for text in second.get('warnings') or [] if isinstance(text, str)]
+        output = folder / CUT_OUTPUT
+        code, tail = self.run_ffmpeg(ffmpeg, render, folder, timeout, 'sciepo-render.log', watch)
+        if code != 0 or not output.is_file() or output.stat().st_size == 0:
+            problem = last_lines(tail) or f'exit code {code}'
+            if fallback is None:
+                raise WorkerError(f'ffmpeg could not render the cut (exit code {code}): {problem}')
+            log(f'the render pass failed ({problem}); running the fallback pass without captions')
+            output.unlink(missing_ok=True)
+            code, tail = self.run_ffmpeg(ffmpeg, fallback, folder, timeout, 'sciepo-fallback.log', watch)
+            if code != 0 or not output.is_file() or output.stat().st_size == 0:
+                raise WorkerError(f'ffmpeg could not render the cut, also not without captions (exit code {code}): {last_lines(tail)}')
+            warnings.append(scrub(f'the render pass failed, so the cut was made by the fallback pass without captions: {last_lines(problem, 1)}')[:500])
+        seconds = self.probe_duration(ffprobe, output)
+        code, loudness = self.run_ffmpeg(ffmpeg, ['-hide_banner', '-nostdin', '-nostats', '-i', CUT_OUTPUT, '-vn', '-af', 'ebur128=peak=true:framelog=verbose',
+                                                  '-f', 'null', '-'], folder, timeout, 'sciepo-loudness.log', watch)
+        if code != 0:
+            warnings.append(f'the loudness of the cut could not be measured (ffmpeg exit code {code})')
+        watch.check()
+        size = output.stat().st_size
+        self.event('uploading', f'{label}: {format_bytes(size)} to Google Drive', {'cutId': cut['id'], 'bytes': size})
+        entry = self.to_drive(output, cut['output']['name'], cut['output'].get('drive'), time.monotonic() + self.upload_window, 'cut')
+        return {'status': 'done', 'drive': entry['drive'], 'sha256': entry['sha256'], 'bytes': entry['bytes'], 'seconds': round(seconds, 3),
+                'loudness': loudness, 'warnings': warnings}
+
+    @staticmethod
+    def has_audio(ffprobe: str, path: Path) -> bool:
+        try:
+            done = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', path.name],
+                                  cwd=str(path.parent), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise WorkerError(f'ffprobe cannot read {path.name}: {error}') from error
+        if done.returncode != 0:
+            raise WorkerError(f'ffprobe cannot read {path.name}: {last_lines(done.stderr or "", 2)}')
+        return bool(done.stdout.strip())
+
+    @staticmethod
+    def probe_duration(ffprobe: str, path: Path) -> float:
+        try:
+            done = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', path.name],
+                                  cwd=str(path.parent), capture_output=True, text=True, timeout=120)
+            seconds = float(done.stdout.strip())
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise WorkerError(f'ffprobe cannot read the length of the cut: {error}') from error
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise WorkerError('ffprobe reports no length for the cut')
+        return seconds
 
 
 def fetch_models(hub: Any, files: list[dict], models: Path) -> None:

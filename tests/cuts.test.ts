@@ -93,7 +93,7 @@ describe('cuts', () => {
     const zh = drafts.find(c => c.language === 'zh-CN')!;
     expect(zh.clips).toHaveLength(batch.clips.length);
     expect(zh.output).toMatchObject({seconds: 12.5, loudness: -14, truePeak: -1.4});
-    expect(h.store.get('media_assets', zh.output!.assetId)).toMatchObject({kind: 'cut_video', origin: 'sciepo'});
+    expect(h.store.get('media_assets', zh.output!.assetId!)).toMatchObject({kind: 'cut_video', origin: 'sciepo'});
     expect(zh.warnings ?? []).toEqual(zh.captions.some(c => c.enabled) ? [expect.stringContaining('字体')] : []);
     // Two ffmpeg passes per cut, then the measurement; ffmpeg never gets a shell or the caption text.
     const renders = h.calls.filter(c => c[0] === 'ffmpeg' && c.at(-1) === 'cut.mp4');

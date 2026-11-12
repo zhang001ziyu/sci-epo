@@ -59,6 +59,10 @@ export interface RenderClip { id: string; sceneId: string; shotIds: string[]; pl
  * Version 1 batches hand file names to workers; version 2 batches render through sessions into the media store. */
 export interface RenderBatch { id: string; episodeId: string; shotListId: string; sourceRevisionId: string; adaptations: Record<string, string>; languages: string[]; width: number; height: number; fps: 24; clipLimitSeconds: number; profile: ProductionProfile; clips: RenderClip[]; warnings: string[]; createdAt: string; version?: 2; preset?: RenderPreset; musicMode?: 'bed' | 'native'; references?: BatchReference[]; readiness?: ReadinessRecord }
 /** A file in Sci-epo's media store, named by its SHA-256. */
+/** A file in the Google Drive of the worker's Colab account; Sci-epo keeps only its ID and name. */
+export interface DriveFile { id: string; name: string }
+/** A rendered take's video: in the media store (assetId) or in Google Drive (drive). */
+export interface TakeVideo { sha256: string; bytes: number; seconds: number; assetId?: string; drive?: DriveFile }
 export type MediaKind = 'reference_image' | 'voice_sample' | 'music' | 'take_video' | 'qa_image' | 'qa_data' | 'cut_video' | 'report';
 export interface MediaAsset { id: string; projectId: string; kind: MediaKind; contentType: string; bytes: number; sha256: string; origin: 'owner' | 'worker' | 'sciepo'; sessionId?: string; label?: string; license?: string; createdAt: string }
 export interface AssetRef { assetId: string; sha256: string }
@@ -75,7 +79,7 @@ export interface QaCheck { id: string; status: 'pass' | 'warning' | 'failure'; m
 export interface SpeechLine { sceneId: string; position: number; language: string; expected: string; heard: string; score: number }
 export interface TakeQa { checks: QaCheck[]; loudness?: {integrated: number; truePeak: number; range?: number}; contactSheet?: string; keyframes: {shotId: string; assetId: string}[]; dataAssetId?: string; speech?: {language?: string; lines: SpeechLine[]} }
 /** One render of a v2 job with one seed. */
-export interface Take { n: number; seed: number; status: 'queued' | 'claimed' | 'rendered' | 'failed'; sessionId?: string; leaseExpiresAt?: string; startedAt?: string; finishedAt?: string; renderSeconds?: number; video?: AssetRef & {bytes: number; seconds: number}; qa?: TakeQa; verdict?: {decision: 'approved' | 'retake'; reasons: RetakeReason[]; note?: string; at: string}; rehearsal?: boolean; error?: string }
+export interface Take { n: number; seed: number; status: 'queued' | 'claimed' | 'rendered' | 'failed'; sessionId?: string; leaseExpiresAt?: string; startedAt?: string; finishedAt?: string; renderSeconds?: number; video?: TakeVideo; qa?: TakeQa; verdict?: {decision: 'approved' | 'retake'; reasons: RetakeReason[]; note?: string; at: string}; rehearsal?: boolean; error?: string }
 /** One render target of a v2 batch. Jobs with the same key are one job, so a clip without dialogue serves every language. */
 export interface RenderJobV2 { id: string; batchId: string; clipId: string; key: string; languages: string[]; order: number; outputName: string; takes: Take[]; approvedTake?: number; updatedAt: string }
 export type SessionEnd = 'queue_empty' | 'budget' | 'stopped' | 'not_current' | 'failures' | 'error' | 'lost' | 'expired';
@@ -100,13 +104,15 @@ export interface CutSettings { musicAssetId: string | null; noMusic?: boolean; m
 /** A caption for the on-screen text of one shot, timed in cut seconds. */
 export interface Caption { shotId: string; start: number; end: number; text: string; enabled: boolean }
 /** One clip of a cut: the take it uses, where it starts in the cut and the gain that levels it. */
-export interface CutClip { clipId: string; jobId: string; take: number; sha256: string; assetId: string; offset: number; seconds: number; gainDb: number; dialogue: boolean }
+export interface CutClip { clipId: string; jobId: string; take: number; sha256: string; assetId?: string; drive?: DriveFile; offset: number; seconds: number; gainDb: number; dialogue: boolean }
 /** One v2 batch edited in one language. A draft uses the latest rendered takes, a final cut the approved ones. */
 export interface Cut {
   id: string; batchId: string; projectId: string; language: string; kind: 'draft' | 'final';
   clips: CutClip[]; settings: CutSettings; captions: Caption[];
   status: 'queued' | 'running' | 'done' | 'failed';
-  output?: {assetId: string; sha256: string; bytes: number; seconds: number; loudness: number | null; truePeak: number | null};
+  output?: {assetId?: string; drive?: DriveFile; sha256: string; bytes: number; seconds: number; loudness: number | null; truePeak: number | null};
+  /** The session whose worker is cutting it, while it runs there (Drive storage). */
+  sessionId?: string;
   signOff?: {decision: 'signed_off' | 'rejected'; note?: string; at: string; reportAssetId?: string};
   rehearsal?: boolean; warnings?: string[]; error?: string; startedAt?: string; finishedAt?: string; createdAt: string; updatedAt: string;
 }

@@ -154,7 +154,7 @@ export function cutPlan(input: CutPlanInput): CutPlan {
     places.set(clip.id, {offset: round3(offset), seconds});
     if (pick && video) {
       const dialogue = clip.shotIds.some(id => (list.shots.find(s => s.id === id)?.spoken.length ?? 0) > 0);
-      clips.push({clipId: clip.id, jobId: pick.job.id, take: pick.take.n, sha256: video.sha256, assetId: video.assetId, offset: round3(offset), seconds, gainDb: cutGain(pick.take.qa?.loudness?.integrated, dialogue, settings), dialogue});
+      clips.push({clipId: clip.id, jobId: pick.job.id, take: pick.take.n, sha256: video.sha256, ...(video.assetId ? {assetId: video.assetId} : {}), ...(video.drive ? {drive: {...video.drive}} : {}), offset: round3(offset), seconds, gainDb: cutGain(pick.take.qa?.loudness?.integrated, dialogue, settings), dialogue});
     }
     offset += seconds;
   }

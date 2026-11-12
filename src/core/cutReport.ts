@@ -23,6 +23,10 @@ const END: Record<string, string> = {queue_empty: '待渲染的 take 都处理�
 /** One line of free text: no line breaks, no table separators. */
 const text = (value: unknown) => String(value ?? '').replace(/\s*\r?\n\s*/gu, ' / ').replace(/\|/gu, '\\|').trim();
 const code = (value: unknown) => `\`${String(value ?? '').replace(/`/gu, '')}\``;
+const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/u;
+/** Where a video is: a Google Drive link (built from the ID only) or the media store. */
+const where = (file: {assetId?: string; drive?: {id: string; name: string}}) =>
+  file.drive && DRIVE_ID.test(file.drive.id) ? `[Google Drive · ${text(file.drive.name)}](https://drive.google.com/file/d/${file.drive.id}/view)` : file.assetId ? 'Sci-epo 媒体库' : '—';
 const signed = (value: number) => `${value > 0 ? '+' : value < 0 ? '−' : '±'}${Math.abs(value).toFixed(1)}`;
 const number = (value: number | null | undefined, digits = 1) => value === null || value === undefined || !Number.isFinite(value) ? '—' : value.toFixed(digits).replace('-', '−');
 const round1 = (value: number) => Math.round(value * 10) / 10;
@@ -83,10 +87,10 @@ export function cutReport(input: CutReportInput): string {
   if (input.sessions.length) out.push(`- 合计用时 ${round1(minutes)} 分钟${unitsKnown ? `，估算 ${round2(units)} 个计算单元` : ''}。`);
   out.push('');
 
-  out.push('## 文件', '', '| 文件 | 类型 | 字节 | SHA-256 |', '|---|---|---|---|');
-  for (const clip of cut.clips) out.push(`| ${clip.clipId} · take ${clip.take} | 渲染视频 | ${asset(clip.assetId)?.bytes ?? '—'} | ${code(clip.sha256)} |`);
-  if (music) out.push(`| ${text(music.label ?? '配乐')} | 配乐 | ${music.bytes} | ${code(music.sha256)} |`);
-  if (cut.output) out.push(`| 成片 | 成片视频 | ${cut.output.bytes} | ${code(cut.output.sha256)} |`);
+  out.push('## 文件', '', '| 文件 | 类型 | 字节 | SHA-256 | 位置 |', '|---|---|---|---|---|');
+  for (const clip of cut.clips) out.push(`| ${clip.clipId} · take ${clip.take} | 渲染视频 | ${(clip.assetId ? asset(clip.assetId)?.bytes : undefined) ?? takeOf(clip.jobId, clip.take).take?.video?.bytes ?? '—'} | ${code(clip.sha256)} | ${where(clip)} |`);
+  if (music) out.push(`| ${text(music.label ?? '配乐')} | 配乐 | ${music.bytes} | ${code(music.sha256)} | Sci-epo 媒体库 |`);
+  if (cut.output) out.push(`| 成片 | 成片视频 | ${cut.output.bytes} | ${code(cut.output.sha256)} | ${where(cut.output)} |`);
   out.push('');
 
   out.push('## 质检结果', '');

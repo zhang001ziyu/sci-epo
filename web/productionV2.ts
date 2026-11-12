@@ -16,6 +16,15 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 const GB = 1024 ** 3;
 const size = (bytes: number) => bytes >= GB ? `${(bytes / GB).toFixed(1)} GB` : formatBytes(bytes);
 export const mediaUrl = (assetId: string) => `/api/media/${encodeURIComponent(assetId)}`;
+const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/u;
+/** Drive links are built from the file ID only, so a stored value can never point elsewhere. */
+export const driveUrl = (id: string, view: 'view' | 'preview' = 'view') => DRIVE_ID.test(id) ? `https://drive.google.com/file/d/${encodeURIComponent(id)}/${view}` : '';
+/** A video from the media store in a player, or from Google Drive in Drive's preview frame with a link to open it. */
+export function videoPlayer(file: {assetId?: string; drive?: {id: string; name: string}}, className: string, label: string): string {
+  if (file.drive && driveUrl(file.drive.id)) return `<div class="${esc(className)} drive-video"><iframe src="${esc(driveUrl(file.drive.id, 'preview'))}" title="${esc(label)}" allow="autoplay; fullscreen" loading="lazy" referrerpolicy="no-referrer"></iframe>`
+    + `<a class="text-button" href="${esc(driveUrl(file.drive.id))}" target="_blank" rel="noreferrer">在 Google Drive 打开 ${esc(file.drive.name)} ↗</a></div>`;
+  return file.assetId ? `<video class="${esc(className)}" controls playsinline preload="metadata" src="${esc(mediaUrl(file.assetId))}" aria-label="${esc(label)}"></video>` : `<p class="small muted">找不到这个视频文件。</p>`;
+}
 
 export const SESSION_NOTEBOOK = 'https://colab.research.google.com/github/zhang001ziyu/sci-epo/blob/main/worker/colab/sciepo_session.ipynb';
 export const TAKE_STATUS: Record<Take['status'], string> = {queued: '排队中', claimed: '渲染中', rendered: '已渲染', failed: '失败'};
@@ -125,7 +134,7 @@ function speechView(qa: TakeQa | undefined): string {
 function takeView(take: Take, decision: string): string {
   const qa = take.qa;
   const media = take.video
-    ? `<video class="review-video" controls playsinline preload="metadata" src="${esc(mediaUrl(take.video.assetId))}" aria-label="take ${esc(take.n)} 的视频"></video>`
+    ? videoPlayer(take.video, 'review-video', `take ${take.n} 的视频`)
     : `<div class="review-placeholder"><strong>${esc(TAKE_STATUS[take.status])}</strong><span class="small muted">${take.status === 'failed' ? '这一条渲染失败，没有视频。' : '还没有视频。'}</span></div>`;
   const facts = [`take ${take.n}`, TAKE_STATUS[take.status], ...(take.video ? [`${take.video.seconds} 秒`, size(take.video.bytes)] : []), `种子 ${take.seed}`, ...(take.renderSeconds !== undefined ? [`渲染用了 ${Math.round(take.renderSeconds)} 秒`] : [])];
   const sheet = qa?.contactSheet ? `<figure class="contact-sheet"><img src="${esc(mediaUrl(qa.contactSheet))}" alt="take ${esc(take.n)} 的联系表" loading="lazy"/><figcaption class="small muted">联系表：每秒一帧，标出了镜头切换。</figcaption></figure>` : '';
@@ -218,13 +227,14 @@ export function codeOnce(code: string, mode: RenderSession['mode'], copied: bool
 }
 
 /** The start form of a current batch: the mode, an optional budget and what is waiting to render. */
-export function sessionStart(batch: RenderBatch, jobs: RenderJobV2[], draft: {mode: RenderSession['mode']; budget: string}, disabled: string): string {
+/** queuedCuts: cuts of this batch waiting for a worker (Drive storage); a session can start for them alone. */
+export function sessionStart(batch: RenderBatch, jobs: RenderJobV2[], draft: {mode: RenderSession['mode']; budget: string}, disabled: string, queuedCuts = 0): string {
   const pending = jobs.filter(j => j.takes.at(-1)?.status === 'queued'), frames = pending.reduce((sum, j) => sum + (batch.clips.find(c => c.id === j.clipId)?.frames ?? 0), 0), id = esc(batch.id);
   const mode = (value: RenderSession['mode'], label: string) => `<label class="check-label"><input type="radio" name="session-mode-${id}" value="${value}" data-production-session-mode="${id}" ${draft.mode === value ? 'checked' : ''} ${disabled}/><span>${label}</span></label>`;
   return `<div class="session-start"><div class="language-toolbar">${mode('pull', 'Colab GPU')}${mode('rehearsal', '演练（不花 GPU）')}`
     + `<label for="session-budget-${id}">时间预算（分钟，可不填）</label><input id="session-budget-${id}" class="small-input" type="number" min="5" max="720" step="1" placeholder="默认" value="${esc(draft.budget)}" data-production-session-budget="${id}" ${disabled}/>`
-    + `<button class="button primary" data-action="production-start-session" data-id="${id}" ${disabled || (pending.length ? '' : 'disabled')}>开始渲染会话</button></div>`
-    + `<p class="small muted">${pending.length ? `待渲染 ${pending.length} 条 take，共 ${frames} 帧（约 ${esc(framesToSeconds(frames))} 秒画面）。` : '没有待渲染的 take。要求重拍后会排上新的 take。'}预算不填时为估算的 1.5 倍、至少 15 分钟；到了预算，工作机不再开始新的 take。演练用占位画面走完整个流程，检查连接、上传和审片，不加载模型。</p></div>`;
+    + `<button class="button primary" data-action="production-start-session" data-id="${id}" ${disabled || (pending.length || queuedCuts ? '' : 'disabled')}>开始渲染会话</button></div>`
+    + `<p class="small muted">${pending.length ? `待渲染 ${pending.length} 条 take，共 ${frames} 帧（约 ${esc(framesToSeconds(frames))} 秒画面）。` : '没有待渲染的 take。要求重拍后会排上新的 take。'}${queuedCuts ? `有 ${queuedCuts} 个成片在排队等剪辑${pending.length ? '，会话渲染完 take 后接着剪' : '；只剪辑不用 GPU，Colab 选 CPU 运行时就够了'}。` : ''}预算不填时为估算的 1.5 倍、至少 15 分钟；到了预算，工作机不再开始新的 take。演练用占位画面走完整个流程，检查连接、上传和审片，不加载模型。</p></div>`;
 }
 
 /** An ended or expired session: the summary and the compute-unit balance read in Colab before and after. */
@@ -261,14 +271,17 @@ export interface CutFormDraft {
 
 /** One cut: status, the player when it is done, facts, warnings and errors. It holds no inputs, so polling can replace it;
  * the status is in the key, so a finished cut draws the page again with its sign-off controls. */
-export function cutView(cut: Cut, o: {current: boolean; batch: Pick<RenderBatch, 'width' | 'height'>}): string {
+/** worker: cuts are made by a session's worker and stored in Google Drive, not on this server. */
+export function cutView(cut: Cut, o: {current: boolean; batch: Pick<RenderBatch, 'width' | 'height'>; worker?: boolean}): string {
   const out = cut.output, id = esc(cut.id);
   const verdict = cut.signOff ? `<span class="pill ${cut.signOff.decision === 'signed_off' ? 'accepted' : 'changed'}">${cut.signOff.decision === 'signed_off' ? '已签收' : '已驳回'}</span>` : '';
   const pills = `<span class="pill ${CUT_STATUS_CLASS[cut.status]}">${esc(CUT_STATUS[cut.status])}</span>${cut.rehearsal ? '<span class="pill demo">演练</span>' : ''}${o.current ? '' : '<span class="pill changed">不是当前版本</span>'}${verdict}`;
   const settings = [sizeLabel(cut.settings.size, o.batch), cut.settings.musicAssetId ? `配乐 ${decibels(cut.settings.musicLevelDb)} dB` : cut.settings.noMusic ? '不加配乐' : '没有配乐', `字幕 ${cut.captions.filter(c => c.enabled).length} 条`];
   const facts = out ? [`${out.seconds} 秒`, `响度 ${decibels(out.loudness)} LUFS`, `真峰值 ${decibels(out.truePeak)} dBTP`, size(out.bytes)] : [];
-  const player = cut.status === 'done' && out ? `<video controls playsinline preload="metadata" src="${esc(mediaUrl(out.assetId))}" class="cut-video" aria-label="${esc(CUT_KIND[cut.kind])}视频"></video>` : '';
-  const waiting = cut.status === 'queued' ? '<p class="small muted">排在队里，前面的成片剪完就开始。</p>' : cut.status === 'running' ? '<p class="small muted">正在用 ffmpeg 剪辑，通常一两分钟。</p>' : '';
+  const player = cut.status === 'done' && out ? videoPlayer(out, 'cut-video', `${CUT_KIND[cut.kind]}视频`) : '';
+  const waiting = cut.status === 'queued'
+    ? (o.worker ? '<p class="small muted">排在队里，等一个渲染会话来剪。没有 take 要渲染时，开会话用 Colab 的 CPU 运行时就够了；剪好的视频存进 Google Drive。</p>' : '<p class="small muted">排在队里，前面的成片剪完就开始。</p>')
+    : cut.status === 'running' ? `<p class="small muted">${o.worker ? '正在 Colab 上用 ffmpeg 剪辑' : '正在用 ffmpeg 剪辑'}，通常一两分钟。</p>` : '';
   const stale = o.current ? '' : `<p class="small">${cut.kind === 'final' ? '有片段通过了另一条 take，这一版不是当前版本，不能签收。要交付请重新剪正式成片。' : '有片段渲染了更新的 take，这一版草稿不是当前版本。'}</p>`;
   return `<div class="cut-item" data-live="cut-${id}-${cut.status}"><div class="session-head"><strong>${esc(CUT_KIND[cut.kind])}</strong>${pills}<span class="small muted">${esc(date(cut.createdAt))}</span></div>`
     + `${player}${facts.length ? `<p class="small">${facts.map(esc).join(' · ')}</p>` : ''}<p class="small muted">${settings.map(esc).join(' · ')}</p>${waiting}${stale}`

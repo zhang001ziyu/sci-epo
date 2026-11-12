@@ -65,6 +65,7 @@ Rendering happens in a worker, such as the one-cell Colab notebook; see the [pro
 
 - **ffmpeg and ffprobe** for cuts: `sudo apt install ffmpeg`, or set `SCIEPO_FFMPEG` and `SCIEPO_FFPROBE` to their paths. Without them the server runs and says so, and cuts are unavailable.
 - **A font for Chinese captions**: `sudo apt install fonts-noto-cjk`, or set `SCIEPO_CAPTION_FONT` to a font file. Without one, cuts are made without captions and say so.
+- **Where videos go**: `SCIEPO_VIDEO_STORAGE=media` (default) keeps takes and cuts in the media folder and cuts them on this server; `SCIEPO_VIDEO_STORAGE=drive` keeps them in the Google Drive of the Colab account and lets the session's worker cut them, so the server needs neither ffmpeg nor large upload limits.
 - **The media folder**: `SCIEPO_MEDIA_DIR` (by default `media` next to the database, `/var/lib/sci-epo/media` with the service template) and its quota `SCIEPO_MEDIA_QUOTA_MB` (5120 by default).
 - **Request size limits** in the reverse proxy: the nginx template allows 64 MB on `/api/worker/v1/takes/` and 30 MB on the media upload route, and 300 KB everywhere else.
 

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
-import type { Caption, Cut, CutSettings, CutSize, Episode, MediaAsset, Project, RenderBatch, RenderJobV2, Revision, ShotList } from '../types';
+import type { Caption, Cut, CutSettings, CutSize, DriveFile, Episode, MediaAsset, Project, RenderBatch, RenderJobV2, RenderSession, Revision, ShotList } from '../types';
 import { CAPTION_MAX_TEXT, CUT_SETTING_RANGES, CUT_SIZES, DEFAULT_CUT_SETTINGS, aspectOf, audioProbeArguments, captionFiles, cutArguments, cutCurrent, cutDimensions, cutPlan, durationProbeArguments, fontFilterValue, loudnessArguments, parseEbur128, parseLoudnorm, sameTakes, type CutNumberSetting, type CutPlan } from '../core/cut';
 import { cutReport } from '../core/cutReport';
 import { languageName, scriptLanguage } from '../core/languages';
@@ -27,6 +27,35 @@ export interface CutsOptions {
   font?: () => string | null;
   /** Parent folder of the temporary work folders. */
   workRoot?: string;
+  /** host: ffmpeg runs here on videos in the media store. worker: a session's worker cuts videos stored in Google Drive. */
+  runner?: 'host' | 'worker';
+}
+
+/** A cut as a session's worker receives it. File names are plain names inside the worker's cut folder. */
+export interface CutTask {
+  id: string; batchId: string; language: string; kind: Cut['kind'];
+  inputs: {name: string; clipId: string; drive: DriveFile; sha256: string; bytes: number}[];
+  music: {name: string; sha256: string; bytes: number} | null;
+  captions: {name: string; text: string}[];
+  output: {name: string; drive: {folder: string[]; share: 'link'}};
+  timeoutSeconds: number;
+}
+const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/u;
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const WORKER_FONT = 'caption-font.ttc';
+const NO_WORKER_FONT = '工作机上没有能显示中文的字体，这一版没有画面文字字幕。';
+const pad2 = (n: number) => String(n).padStart(2, '0');
+/** A Drive folder or file name without path separators or control characters. */
+export const driveName = (text: string, max = 100) => text.replace(/[\\/\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, max) || 'Sci-epo';
+/** The Drive folder of a batch's videos: Sci-epo / series / episode / batch. */
+export function driveFolder(project: Pick<Project, 'title'>, episode: Pick<Episode, 'ordinal' | 'title'>, batch: Pick<RenderBatch, 'id' | 'createdAt'>): string[] {
+  return ['Sci-epo', driveName(project.title), driveName(`第 ${episode.ordinal} 集 ${episode.title}`), driveName(`批次 ${batch.createdAt.slice(0, 10)} ${batch.id.slice(0, 8)}`)];
+}
+/** A Drive file a worker reports: an ID of Drive's alphabet and a plain name. */
+export function parseDriveFile(value: unknown): DriveFile | undefined {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value as Body : {};
+  if (typeof v.id !== 'string' || !DRIVE_ID.test(v.id) || typeof v.name !== 'string' || !v.name.trim() || v.name.length > 200) return undefined;
+  return {id: v.id, name: driveName(v.name, 200)};
 }
 
 export const FFMPEG_HINT = '这台电脑上找不到 ffmpeg，Sci-epo 不能剪辑成片。请在运行 Sci-epo 的电脑上安装 ffmpeg（Windows：winget install Gyan.FFmpeg；macOS：brew install ffmpeg；Debian 或 Ubuntu：sudo apt install ffmpeg），然后重启 Sci-epo；也可以用环境变量 SCIEPO_FFMPEG 和 SCIEPO_FFPROBE 写明两个程序的路径。';
@@ -99,6 +128,8 @@ export class Cuts {
     this.recover();
   }
   private now() { return this.clock().toISOString(); }
+  /** True when a session's worker makes the cuts and stores them in Google Drive. */
+  get byWorker(): boolean { return this.options.runner === 'worker'; }
   tools(): CutTools | null { return (this.options.tools ?? findTools)(); }
   private font(): string | null { return (this.options.font ?? findCaptionFont)(); }
 
@@ -149,7 +180,7 @@ export class Cuts {
   private planView(batchId: string, params: URLSearchParams) {
     const ctx = this.context(batchId), language = this.language(ctx.batch, params.get('language')), kind = this.kind(params.get('kind') ?? undefined);
     return {...this.plan(ctx, language, kind), settings: {...DEFAULT_CUT_SETTINGS}, sizes: this.sizes(ctx.batch),
-      musicRequired: kind === 'final' && ctx.batch.musicMode !== 'native', ffmpeg: this.tools() ? {found: true} : {found: false, hint: FFMPEG_HINT}};
+      musicRequired: kind === 'final' && ctx.batch.musicMode !== 'native', ffmpeg: this.byWorker || this.tools() ? {found: true} : {found: false, hint: FFMPEG_HINT}};
   }
 
   private create(batchId: string, body: Body) {
@@ -158,7 +189,7 @@ export class Cuts {
     const plan = this.plan(ctx, language, kind, settings);
     const captions = body.captions === undefined ? plan.captions : this.captions(ctx, body.captions, plan.seconds);
     if (kind === 'final' && !ctx.current) this.fail(409, '这一批已不是当前制作版本，不能剪正式成片。请用当前分镜表的批次。');
-    if (!this.tools()) this.fail(503, FFMPEG_HINT);
+    if (!this.byWorker && !this.tools()) this.fail(503, FFMPEG_HINT);
     if (plan.missing.length) this.fail(409, kind === 'final'
       ? `还有片段没有通过的 take：${plan.missing.join('、')}。每个片段都通过一条 take 后才能剪正式成片。`
       : `还有片段没有渲染好的 take：${plan.missing.join('、')}。`);
@@ -297,16 +328,136 @@ export class Cuts {
     return undefined;
   }
 
+  // ------------------------------------------------------------------ worker side (Drive storage)
+
+  /** Cuts of these batches a worker can take: queued ones, and running ones whose session is no longer live. */
+  private waiting(batchIds: readonly string[], live: (sessionId: string) => boolean): Cut[] {
+    const ids = new Set(batchIds);
+    return this.store.all('cuts').filter(c => ids.has(c.batchId) && (c.status === 'queued' || (c.status === 'running' && (!c.sessionId || !live(c.sessionId)))))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  queuedFor(batchIds: readonly string[], live: (sessionId: string) => boolean): number { return this.byWorker ? this.waiting(batchIds, live).length : 0; }
+
+  /** The next cut for this session's worker, marked running for it. A cut whose clips are not in Drive fails here. */
+  claimFor(session: Pick<RenderSession, 'id' | 'batchIds'>, live: (sessionId: string) => boolean): CutTask | undefined {
+    if (!this.byWorker) return undefined;
+    for (const cut of this.waiting(session.batchIds, live)) {
+      const ctx = this.context(cut.batchId), at = this.now();
+      const missing = cut.clips.filter(c => !c.drive).map(c => c.clipId);
+      if (missing.length) {
+        this.store.update('cuts', {...cut, status: 'failed', error: `片段 ${missing.join('、')} 的视频不在 Google Drive 里，工作机拿不到。请重新渲染这些片段后再剪。`, finishedAt: at, updatedAt: at});
+        continue;
+      }
+      const {error: _e, warnings: _w, output: _o, ...rest} = cut;
+      this.store.update('cuts', {...rest, status: 'running', sessionId: session.id, startedAt: at, updatedAt: at});
+      return this.task(cut, ctx);
+    }
+    return undefined;
+  }
+
+  private task(cut: Cut, ctx: BatchContext): CutTask {
+    const inputs = cut.clips.map((clip, i) => {
+      const take = ctx.jobs.find(j => j.id === clip.jobId)?.takes.find(t => t.n === clip.take);
+      return {name: `clip-${pad2(i + 1)}.mp4`, clipId: clip.clipId, drive: {...clip.drive!}, sha256: clip.sha256, bytes: take?.video?.bytes ?? 0};
+    });
+    const asset = cut.settings.musicAssetId ? this.store.get('media_assets', cut.settings.musicAssetId) : undefined;
+    const total = cut.clips.reduce((sum, c) => sum + c.seconds, 0);
+    return {id: cut.id, batchId: cut.batchId, language: cut.language, kind: cut.kind, inputs,
+      music: asset ? {name: `music.${this.media.extension(asset)}`, sha256: asset.sha256, bytes: asset.bytes} : null,
+      captions: captionFiles(cut.captions, cut.language).map(f => ({name: f.name, text: f.text})),
+      output: {name: `ep${pad2(ctx.episode.ordinal)}-${cut.language}-${cut.kind}-${cut.id.slice(0, 8)}.mp4`, drive: {folder: driveFolder(ctx.project, ctx.episode, ctx.batch), share: 'link'}},
+      timeoutSeconds: Math.round(Math.max(600, total * 30))};
+  }
+
+  /** The cut this session's worker is making. */
+  private mine(session: Pick<RenderSession, 'id'>, cutId: string): Cut {
+    const cut = this.store.get('cuts', cutId);
+    if (!cut || cut.status !== 'running' || cut.sessionId !== session.id) return this.fail(409, '这个成片不属于这个会话，或已经不在剪辑中。');
+    return cut;
+  }
+
+  heartbeatFor(session: Pick<RenderSession, 'id' | 'stopRequest'>, cutId: string) {
+    const cut = this.mine(session, cutId);
+    this.store.update('cuts', {...cut, updatedAt: this.now()});
+    return {stop: session.stopRequest?.when ?? null};
+  }
+
+  musicFor(session: Pick<RenderSession, 'id'>, cutId: string, req: Request): Response {
+    const cut = this.mine(session, cutId), asset = cut.settings.musicAssetId ? this.store.get('media_assets', cut.settings.musicAssetId) : undefined;
+    if (!asset) return this.fail(404, '这个成片没有配乐。');
+    return this.media.serve(req, asset);
+  }
+
+  /** ffmpeg arguments for the worker: the loudness measurement, then the render pass with a fallback without captions. */
+  argsFor(session: Pick<RenderSession, 'id'>, cutId: string, body: Body) {
+    const cut = this.mine(session, cutId), ctx = this.context(cut.batchId), audio = obj(body.audio), warnings: string[] = [];
+    if (typeof body.font !== 'boolean') this.fail(400, '请说明工作机有没有字幕字体。');
+    const files = captionFiles(cut.captions, cut.language), font = body.font === true && files.length ? WORKER_FONT : null;
+    if (files.length && !font) warnings.push(NO_WORKER_FONT);
+    const inputs = cut.clips.map((clip, i) => {
+      const name = `clip-${pad2(i + 1)}.mp4`, has = audio[name];
+      if (has !== true && has !== false) this.fail(400, `请说明 ${name} 有没有音轨。`);
+      if (has === false) warnings.push(`片段 ${clip.clipId} 没有音轨，这一段用静音。`);
+      return {file: name, seconds: clip.seconds, gainDb: clip.gainDb, audio: has === true};
+    });
+    const asset = cut.settings.musicAssetId ? this.store.get('media_assets', cut.settings.musicAssetId) : undefined;
+    const input = {inputs, music: asset ? {file: `music.${this.media.extension(asset)}`, levelDb: cut.settings.musicLevelDb} : null,
+      captions: font ? files.map(f => ({file: f.name, start: f.start, end: f.end})) : [], font, ...cutDimensions(cut.settings.size, ctx.batch), fps: ctx.batch.fps,
+      settings: cut.settings, output: 'cut.mp4', comment: `Sci-epo cut ${cut.id}`};
+    if (body.measured === undefined) return {args: cutArguments(input)};
+    if (typeof body.measured !== 'string' || body.measured.length > 65_536) this.fail(400, '响度测量输出需为 64 KB 以内的文字。');
+    const measured = parseLoudnorm(body.measured as string);
+    if (!measured) warnings.push('没有测到可用的响度（声音可能整段静音），这一版没有做响度标准化。');
+    // Warnings that come from Sci-epo's own reading are kept with the cut, whatever the worker reports.
+    this.store.update('cuts', {...cut, warnings: [...new Set(warnings)], updatedAt: this.now()});
+    return {args: cutArguments(input, measured), fallback: input.captions.length ? cutArguments({...input, captions: [], font: null}, measured) : null, warnings};
+  }
+
+  resultFor(session: Pick<RenderSession, 'id'>, cutId: string, body: Body) {
+    const cut = this.mine(session, cutId), at = this.now(), {sessionId: _s, ...rest} = cut;
+    if (body.status === 'failed') {
+      this.store.update('cuts', {...rest, status: 'failed', error: scrub(typeof body.error === 'string' && body.error ? body.error : '工作机报告剪辑失败，没有说明原因。', 500), finishedAt: at, updatedAt: at});
+      return {ok: true};
+    }
+    if (body.status !== 'done') this.fail(400, '剪辑结果只能是 done 或 failed。');
+    const drive = parseDriveFile(body.drive) ?? this.fail(400, '剪辑结果需要成片在 Google Drive 里的文件。');
+    const sha256 = typeof body.sha256 === 'string' && SHA256_HEX.test(body.sha256) ? body.sha256 : this.fail(400, '成片的 SHA-256 无效。');
+    const bytes = typeof body.bytes === 'number' && Number.isSafeInteger(body.bytes) && body.bytes > 0 && body.bytes <= 4 * 1024 ** 3 ? body.bytes : this.fail(400, '成片的大小无效。');
+    const total = cut.clips.reduce((sum, c) => sum + c.seconds, 0);
+    const seconds = typeof body.seconds === 'number' && Number.isFinite(body.seconds) && body.seconds > 0 && body.seconds <= 7200 ? round3(body.seconds) : round3(total);
+    if (body.loudness !== undefined && (typeof body.loudness !== 'string' || body.loudness.length > 65_536)) this.fail(400, '响度测量输出需为 64 KB 以内的文字。');
+    const loudness = parseEbur128(typeof body.loudness === 'string' ? body.loudness : '');
+    const reported = (Array.isArray(body.warnings) ? body.warnings : []).filter((w): w is string => typeof w === 'string').slice(0, 10).map(w => scrub(w, 300));
+    const warnings = [...new Set([...(cut.warnings ?? []), ...reported, ...(typeof body.seconds === 'number' && body.seconds > 0 ? [] : ['读不出成片的时长，这里写的是计划时长。']), ...(loudness.integrated === null ? ['没有测到成片的响度。'] : [])])];
+    this.store.update('cuts', {...rest, status: 'done', output: {drive, sha256, bytes, seconds, loudness: loudness.integrated, truePeak: loudness.truePeak}, ...(warnings.length ? {warnings} : {}), finishedAt: at, updatedAt: at});
+    return {ok: true};
+  }
+
+  /** A session that ends gives its running cuts back to the queue. */
+  releaseFor(sessionId: string): number {
+    let released = 0;
+    for (const cut of this.store.all('cuts')) {
+      if (cut.status !== 'running' || cut.sessionId !== sessionId) continue;
+      const {sessionId: _s, ...rest} = cut;
+      this.store.update('cuts', {...rest, status: 'queued', updatedAt: this.now()});
+      released++;
+    }
+    return released;
+  }
+
   // ------------------------------------------------------------------ runner
 
   /** Cuts that were running when the server stopped go back to the queue. */
   private recover(): void {
+    // A worker's cut stays with its session; a new claim takes it again once that session is no longer live.
+    if (this.byWorker) return;
     for (const cut of this.store.all('cuts')) if (cut.status === 'running') this.store.update('cuts', {...cut, status: 'queued', updatedAt: this.now()});
     if (this.store.all('cuts').some(c => c.status === 'queued')) this.kick();
   }
 
   /** Start the runner unless it is running; it takes queued cuts one at a time, oldest first. */
   kick(): void {
+    if (this.byWorker) return;
     this.wanted = true;
     if (this.loop) return;
     this.loop = (async () => {

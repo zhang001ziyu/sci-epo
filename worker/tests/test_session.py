@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -58,8 +59,13 @@ class FakeSession:
     """Sci-epo's worker session routes: the document, references, events, claim, heartbeat, file uploads, result and end."""
 
     def __init__(self, answers, *, mode='pull', stacks=None, modes=('r2v',), references=None, blobs=None, allow_untested=False,
-                 heartbeat=0.05, upload_failures=None, always_fail=(), on_claim=None, budget_ends='2099-01-01T00:00:00.000Z'):
+                 heartbeat=0.05, upload_failures=None, always_fail=(), on_claim=None, budget_ends='2099-01-01T00:00:00.000Z',
+                 storage=None, work=None, music=None, cut_args=None):
         self.answers, self.budget_ends = list(answers), budget_ends
+        # Drive storage: the document's storage and work, the music of the cuts and Sci-epo's ffmpeg arguments (a function
+        # of the cut id and the request body).
+        self.storage, self.work, self.music, self.cut_args = storage, work, music, cut_args
+        self.cut_heartbeats, self.args_calls, self.cut_results, self.music_gets = [], [], {}, 0
         self.mode, self.modes, self.allow_untested, self.heartbeat_s = mode, list(modes), allow_untested, heartbeat
         self.stacks = [stack_document()] if stacks is None and mode == 'pull' else list(stacks or [])
         self.references = [{'name': REF_NAME, 'sha256': PNG_SHA, 'kind': 'image', 'bytes': len(PNG)}] if references is None else references
@@ -104,6 +110,9 @@ class FakeSession:
                 if len(parts) == 2 and parts[0] == 'references':
                     blob = outer.blobs.get(parts[1])
                     return self.reply(200, raw=blob) if blob is not None else self.reply(404, {'error': 'no such reference'})
+                if len(parts) == 3 and parts[0] == 'cuts' and parts[2] == 'music':
+                    outer.music_gets += 1
+                    return self.reply(200, raw=outer.music) if outer.music is not None else self.reply(404, {'error': 'no music'})
                 return self.reply(404, {'error': 'not found'})
 
             def do_POST(self):  # noqa: N802
@@ -132,6 +141,17 @@ class FakeSession:
                     if len(parts) == 4 and parts[0] == 'takes' and parts[3] == 'result':
                         outer.results[(parts[1], int(parts[2]))] = payload
                         return self.reply(200, {'ok': True})
+                    if len(parts) == 3 and parts[0] == 'cuts' and parts[2] == 'heartbeat':
+                        outer.cut_heartbeats.append(parts[1])
+                        return self.reply(200, {'stop': outer.stop})
+                    if len(parts) == 3 and parts[0] == 'cuts' and parts[2] == 'result':
+                        outer.cut_results[parts[1]] = payload
+                        return self.reply(200, {'ok': True})
+                    if len(parts) == 3 and parts[0] == 'cuts' and parts[2] == 'args':
+                        outer.args_calls.append((parts[1], payload))
+                        make = outer.cut_args
+                if len(parts) == 3 and parts[0] == 'cuts' and parts[2] == 'args':  # outside the lock: it may change outer.stop
+                    return self.reply(200, make(parts[1], payload)) if make else self.reply(404, {'error': 'no cut'})
                 return self.reply(404, {'error': 'not found'})
 
             def do_PUT(self):  # noqa: N802
@@ -146,6 +166,9 @@ class FakeSession:
                 with outer.lock:
                     record = {'jobId': parts[1], 'n': int(parts[2]), 'kind': kind, 'shot': (query.get('shot') or [None])[0], 'bytes': data,
                               'length': self.headers.get('content-length'), 'type': self.headers.get('content-type')}
+                    if kind == 'video' and (outer.storage or {}).get('video') == 'drive':  # videos go to Google Drive
+                        outer.uploads.append({**record, 'status': 409})
+                        return self.reply(409, {'error': 'videos of this session go to Google Drive'})
                     queued = outer.upload_failures.get(kind)
                     if kind in outer.always_fail or queued:
                         status = queued.pop(0) if queued else 503
@@ -168,7 +191,8 @@ class FakeSession:
                             'budgetMinutes': 60, 'budgetEndsAt': self.budget_ends, 'allowUntestedGpu': self.allow_untested,
                             'waitForRetakesMinutes': 0, 'heartbeatSeconds': self.heartbeat_s},
                 'worker': {'sha256': w.program_sha256(), 'bytes': 1}, 'stacks': self.stacks, 'modes': self.modes, 'references': self.references,
-                'estimate': {'setupMinutes': 0, 'renderMinutes': 1, 'takes': len(self.answers), 'frames': 96, 'measured': False}}
+                'estimate': {'setupMinutes': 0, 'renderMinutes': 1, 'takes': len(self.answers), 'frames': 96, 'measured': False},
+                **({'storage': self.storage} if self.storage is not None else {}), **({'work': self.work} if self.work is not None else {})}
 
     def stages(self) -> list[str]:
         return [e['stage'] for e in self.events]
@@ -754,6 +778,462 @@ class QaTests(unittest.TestCase):
         tagged = w.tag_video(clip, 'sciepo session s job j take 1')
         self.assertIn(b'sciepo session s job j take 1', tagged.read_bytes())
         self.assertEqual(w.probe_seconds(tagged), 2.0)
+
+
+# --------------------------------------------------------------------------- Google Drive storage and cuts
+
+ACCOUNT = 'writer@example.com'
+DRIVE_FOLDER = ['Sci-epo', "Maya's \\ project", 'takes']
+CUT_FOLDER = ['Sci-epo', "Maya's \\ project", 'cuts']
+
+
+class FakeResponse:
+    def __init__(self, status, payload=None, headers=None, raw=b''):
+        self.status_code, self.headers, self.payload, self.raw = status, dict(headers or {}), payload, raw
+
+    def json(self):
+        if self.payload is None:
+            raise ValueError('no JSON body')
+        return self.payload
+
+    @property
+    def text(self):
+        return json.dumps(self.payload) if self.payload is not None else self.raw.decode('utf-8', 'replace')
+
+    def iter_content(self, chunk_size=1):
+        for at in range(0, len(self.raw), chunk_size):
+            yield self.raw[at:at + chunk_size]
+
+    def close(self):
+        pass
+
+
+class FakeDrive:
+    """Google Drive REST v3 as DriveClient calls it through a requests-style session: about, folder search and creation,
+    resumable uploads (308 with Range), link permissions and alt=media downloads. Failures can be injected."""
+
+    API = 'https://www.googleapis.com/drive/v3'
+    UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
+
+    def __init__(self, account=ACCOUNT, chunk_failures=0, upload_status=None):
+        self.account, self.chunk_failures, self.upload_status = account, chunk_failures, upload_status
+        self.folders, self.files, self.sessions = {}, {}, {}
+        self.permissions, self.downloads, self.queries, self.created, self.chunks, self.calls = [], [], [], [], 0, []
+        self.lock = threading.Lock()
+
+    def new_id(self, prefix):
+        return f'{prefix}{len(self.folders) + len(self.files) + len(self.sessions) + 1:04d}_fakeid'
+
+    def add_folder(self, name, parent='root'):
+        folder_id = self.new_id('fold')
+        self.folders[folder_id] = {'name': name, 'parent': parent}
+        return folder_id
+
+    def add_file(self, data, name='clip.mp4', parent='root'):
+        file_id = self.new_id('file')
+        self.files[file_id] = {'name': name, 'parent': parent, 'data': bytes(data), 'mimeType': 'video/mp4'}
+        return file_id
+
+    def path_of(self, folder_id):
+        path = []
+        while folder_id != 'root':
+            path.insert(0, self.folders[folder_id]['name'])
+            folder_id = self.folders[folder_id]['parent']
+        return path
+
+    def request(self, method, url, params=None, json=None, data=None, headers=None, stream=False, timeout=None):  # noqa: A002, PLR0911
+        with self.lock:
+            split = urllib.parse.urlsplit(url)
+            params = {**dict(urllib.parse.parse_qsl(split.query)), **(params or {})}
+            base = f'{split.scheme}://{split.netloc}{split.path}'
+            headers = headers or {}
+            self.calls.append((method, base))
+            if method == 'GET' and base == f'{self.API}/about':
+                assert params['fields'] == 'user(emailAddress)'
+                return FakeResponse(200, {'user': {'emailAddress': self.account}})
+            if method == 'GET' and base == f'{self.API}/files':
+                self.queries.append(params['q'])
+                found = re.fullmatch(r"name = '((?:[^'\\]|\\.)*)' and '((?:[^'\\]|\\.)*)' in parents and "
+                                     r"mimeType = 'application/vnd\.google-apps\.folder' and trashed = false", params['q'])
+                assert found, params['q']
+                name, parent = (re.sub(r'\\(.)', r'\1', group) for group in found.groups())
+                return FakeResponse(200, {'files': [{'id': i, 'name': f['name']} for i, f in self.folders.items()
+                                                    if f['name'] == name and f['parent'] == parent]})
+            if method == 'POST' and base == f'{self.API}/files':
+                assert json['mimeType'] == 'application/vnd.google-apps.folder'
+                folder_id = self.add_folder(json['name'], json['parents'][0])
+                self.created.append(json['name'])
+                return FakeResponse(200, {'id': folder_id})
+            if method == 'POST' and base == self.UPLOAD:
+                assert params == {'uploadType': 'resumable', 'fields': 'id,name'}, params
+                if self.upload_status:
+                    return FakeResponse(self.upload_status, {'error': {'message': 'Backend Error'}})
+                uri = f'{self.UPLOAD}?uploadType=resumable&upload_id=u{len(self.sessions) + 1}'
+                self.sessions[uri] = {'meta': json, 'size': int(headers['X-Upload-Content-Length']), 'data': bytearray(),
+                                      'type': headers['X-Upload-Content-Type']}
+                return FakeResponse(200, None, {'Location': uri})
+            if method == 'PUT' and url in self.sessions:
+                upload = self.sessions[url]
+                held = len(upload['data'])
+                if headers['Content-Range'] == f"bytes */{upload['size']}":
+                    return FakeResponse(308, None, {'Range': f'bytes=0-{held - 1}'} if held else {})
+                self.chunks += 1
+                if self.chunk_failures:
+                    self.chunk_failures -= 1
+                    upload['data'].extend(data[:len(data) // 2])  # half the chunk arrived before the connection broke
+                    raise ConnectionError('connection reset by peer')
+                start, end, total = map(int, re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', headers['Content-Range']).groups())
+                assert (start, end - start + 1, total, int(headers['Content-Length'])) == (held, len(data), upload['size'], len(data))
+                upload['data'].extend(data)
+                if len(upload['data']) < upload['size']:
+                    return FakeResponse(308, None, {'Range': f"bytes=0-{len(upload['data']) - 1}"})
+                meta = upload['meta']
+                file_id = self.add_file(upload['data'], meta['name'], meta['parents'][0])
+                self.files[file_id]['mimeType'] = meta['mimeType']
+                return FakeResponse(200, {'id': file_id, 'name': meta['name']})
+            found = re.fullmatch(re.escape(self.API) + r'/files/([A-Za-z0-9_-]+)(/permissions)?', base)
+            if found and method == 'POST' and found.group(2):
+                self.permissions.append((found.group(1), json))
+                return FakeResponse(200, {'id': 'anyoneWithLink'})
+            if found and method == 'GET' and params.get('alt') == 'media':
+                self.downloads.append(found.group(1))
+                item = self.files.get(found.group(1))
+                return FakeResponse(200, raw=item['data']) if item else FakeResponse(404, {'error': {'message': 'File not found'}})
+            return FakeResponse(400, {'error': {'message': f'unexpected {method} {base}'}})
+
+
+REAL_OPEN_DRIVE = w.open_drive_session
+
+
+def drive_take(n=1, job='job-0001-aaaa', **overrides):
+    return make_take(n, job, drive={'folder': DRIVE_FOLDER, 'share': 'link'}, **overrides)
+
+
+def sent_to_sciepo(fake: FakeSession) -> str:
+    """Everything the worker sent to the fake Sci-epo, as one text."""
+    return json.dumps([fake.events, list(fake.results.values()), fake.cut_results, fake.ends, fake.args_calls], ensure_ascii=False)
+
+
+class DriveClientTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        patcher = mock.patch.object(w, 'UPLOAD_BACKOFF_S', 0.01)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_folders_are_found_or_created_once_with_quoted_names(self):
+        drive = FakeDrive()
+        top = drive.add_folder('Sci-epo')
+        client = w.DriveClient(session=drive)
+        leaf = client.folder(DRIVE_FOLDER)
+        self.assertEqual(client.folder(DRIVE_FOLDER), leaf)
+        self.assertEqual(drive.path_of(leaf), DRIVE_FOLDER)
+        self.assertEqual(drive.created, DRIVE_FOLDER[1:])  # Sci-epo was there already
+        self.assertEqual(len(drive.queries), 3)
+        self.assertIn("name = 'Maya\\'s \\\\ project'", drive.queries[1])
+        self.assertIn(f"'{top}' in parents", drive.queries[1])
+        self.assertEqual(w.DriveClient(session=drive).folder(DRIVE_FOLDER), leaf)  # a new client finds them all
+        self.assertEqual(len(drive.created), 2)
+
+    def test_a_resumable_upload_continues_where_drive_stopped(self):
+        drive = FakeDrive(chunk_failures=2)
+        data = os.urandom(300_000)
+        path = self.dir / 'take.mp4'
+        path.write_bytes(data)
+        with mock.patch.object(w, 'DRIVE_CHUNK', 64 * 1024), contextlib.redirect_stdout(io.StringIO()):
+            found = w.DriveClient(session=drive).upload(path, 'ep01-c01-t1.mp4', 'root')
+        self.assertEqual(drive.files[found['id']]['data'], data)
+        self.assertEqual((found['name'], drive.files[found['id']]['mimeType']), ('ep01-c01-t1.mp4', 'video/mp4'))
+        # Two broken PUTs that each left half a chunk with Drive, then four chunks from the offsets Drive reported.
+        self.assertEqual(drive.chunks, 2 + 4)
+
+    def test_downloads_are_checked_against_size_and_sha256(self):
+        drive = FakeDrive()
+        data = b'clip bytes' * 1000
+        file_id = drive.add_file(data)
+        client = w.DriveClient(session=drive)
+        client.download(file_id, self.dir / 'clip-01.mp4', hashlib.sha256(data).hexdigest(), len(data))
+        self.assertEqual((self.dir / 'clip-01.mp4').read_bytes(), data)
+        with self.assertRaisesRegex(w.WorkerError, 'SHA-256'):
+            client.download(file_id, self.dir / 'clip-02.mp4', '0' * 64, len(data))
+        with self.assertRaisesRegex(w.WorkerError, 'larger'):
+            client.download(file_id, self.dir / 'clip-03.mp4', hashlib.sha256(data).hexdigest(), 10)
+        with self.assertRaisesRegex(w.WorkerError, 'HTTP 404.*File not found'):
+            client.download('nosuchfile', self.dir / 'clip-04.mp4', '0' * 64, 10)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['clip-01.mp4'])
+
+    def test_server_errors_are_retried_and_then_reported(self):
+        drive = FakeDrive(upload_status=503)
+        path = self.dir / 'take.mp4'
+        path.write_bytes(b'x' * 10)
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaisesRegex(w.WorkerError, r'HTTP 503: Backend Error.*6 times'):
+            w.DriveClient(session=drive).upload(path, 'take.mp4', 'root')
+        self.assertEqual(out.getvalue().count('trying again'), 5)
+
+
+class DriveSessionTests(SessionTestCase):
+    def setUp(self):
+        super().setUp()
+        self.drive = FakeDrive()
+        patcher = mock.patch.object(w, 'open_drive_session', return_value=self.drive)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @unittest.skipUnless(HAS_FFMPEG, 'ffmpeg and ffprobe are needed for rehearsal renders')
+    def test_rehearsal_takes_go_to_google_drive_shared_by_link(self):
+        self.drive.add_folder('Sci-epo')
+        takes = [drive_take(rehearsal=True), drive_take(1, 'job-0002-bbbb', output='ep01-c02.mp4', rehearsal=True)]
+        fake = self.serve(FakeSession([{'take': t} for t in takes], mode='rehearsal', storage={'video': 'drive'}, work={'takes': 2, 'cuts': 0}))
+        with mock.patch.object(w, 'DRIVE_CHUNK', 64 * 1024):
+            code, printed = self.run_session(fake)
+        self.assertEqual(code, 0, printed)
+        self.query_gpu.assert_not_called()
+        self.assertFalse({'gpu', 'installing', 'error'} & set(fake.stages()))
+        self.assertIn('Google Drive', next(e for e in fake.events if e['stage'] == 'ready')['message'])
+        self.assertIn('to Google Drive', next(e for e in fake.events if e['stage'] == 'uploading')['message'])
+        self.assertEqual([u for u in fake.uploads if u['kind'] == 'video'], [])  # never offered to Sci-epo
+        self.assertEqual(len(fake.uploaded('contact-sheet')), 2)
+        self.assertEqual(len(fake.uploaded('keyframe')), 4)
+        self.assertEqual(len(fake.uploaded('qa')), 2)
+        for (job, n), take in zip(sorted(fake.results), takes):
+            result = fake.results[(job, n)]
+            self.assertEqual(result['status'], 'rendered')
+            self.assertNotIn('video', result['files'])
+            self.assertEqual(set(result['files']), {'contactSheet', 'keyframes', 'qa'})
+            video = result['video']
+            stored = self.drive.files[video['drive']['id']]
+            self.assertEqual(video['drive'], {'id': video['drive']['id'], 'name': f"{Path(take['output']).stem}-t1.mp4"})
+            self.assertEqual((video['sha256'], video['bytes']), (hashlib.sha256(stored['data']).hexdigest(), len(stored['data'])))
+            self.assertEqual(stored['data'][4:8], b'ftyp')
+            self.assertEqual(self.drive.path_of(stored['parent']), DRIVE_FOLDER)
+            self.assertIn((video['drive']['id'], {'type': 'anyone', 'role': 'reader'}), self.drive.permissions)
+        self.assertEqual(self.drive.created, DRIVE_FOLDER[1:])
+        self.assertEqual(len(self.drive.permissions), 2)
+        self.assertEqual(fake.ends[0]['reason'], 'queue_empty')
+        self.assertIn(ACCOUNT, printed)  # shown on the runtime only
+        self.assertNotIn(ACCOUNT, sent_to_sciepo(fake))
+
+    def test_a_drive_upload_that_keeps_failing_leaves_the_take_undelivered(self):
+        self.drive.upload_status = 503
+        comfy = self.serve(SessionComfy(video=self.real_video))
+        fake = self.serve(FakeSession([{'take': drive_take()}], storage={'video': 'drive'}))
+        with mock.patch.object(w, 'UPLOAD_WINDOW_S', 0.3), mock.patch.object(w, 'UPLOAD_BACKOFF_S', 0.05):
+            code, printed = self.run_session(fake, comfy)
+        self.assertEqual(code, 0, printed)
+        self.assertEqual(fake.results, {})
+        self.assertEqual([u for u in fake.uploads if u['kind'] == 'video'], [])
+        self.assertEqual(self.drive.files, {})
+        self.assertEqual(fake.ends[0]['undelivered'], [{'jobId': 'job-0001-aaaa', 'n': 1}])
+        error = next(e for e in fake.events if e['stage'] == 'error' and 'not delivered' in e['message'])
+        self.assertIn('did not reach Google Drive', error['message'])
+        self.assertIn('HTTP 503', error['message'])
+
+    def test_a_take_without_a_drive_folder_fails_before_it_renders(self):
+        comfy = self.serve(SessionComfy(video=self.real_video))
+        fake = self.serve(FakeSession([{'take': make_take()}], storage={'video': 'drive'}))
+        code, printed = self.run_session(fake, comfy)
+        self.assertEqual(code, 0, printed)
+        self.assertEqual(comfy.graphs, [])
+        self.assertEqual(fake.results[('job-0001-aaaa', 1)]['status'], 'failed')
+        self.assertIn('Google Drive folder', fake.results[('job-0001-aaaa', 1)]['error'])
+
+    def test_missing_google_authorization_ends_the_session_before_any_work(self):
+        class DefaultCredentialsError(Exception):
+            pass
+        auth = mock.Mock(default=mock.Mock(side_effect=DefaultCredentialsError('Your default credentials were not found.')))
+        google = mock.Mock(auth=auth)
+        modules = {'google': google, 'google.auth': auth, 'google.auth.transport': auth.transport,
+                   'google.auth.transport.requests': mock.Mock(AuthorizedSession=mock.Mock())}
+        fake = self.serve(FakeSession([{'take': drive_take()}], mode='rehearsal', storage={'video': 'drive'}))
+        with mock.patch.object(w, 'open_drive_session', REAL_OPEN_DRIVE), mock.patch.dict(sys.modules, modules):
+            code, printed = self.run_session(fake)
+        self.assertEqual(code, 3, printed)
+        self.assertEqual(fake.stages(), ['connected', 'error', 'finishing'])
+        self.assertIn('Google Drive is not authorized', fake.events[1]['message'])
+        self.assertIn('notebook cell', fake.events[1]['message'])
+        auth.default.assert_called_once_with(scopes=['https://www.googleapis.com/auth/drive'])
+        self.assertEqual((fake.claims, fake.ends[0]['reason']), (0, 'error'))
+
+    def test_media_storage_never_touches_google_drive(self):
+        comfy = self.serve(SessionComfy(video=self.real_video))
+        fake = self.serve(FakeSession([{'take': make_take()}], storage={'video': 'media'}, work={'takes': 1, 'cuts': 0}))
+        code, printed = self.run_session(fake, comfy)
+        self.assertEqual(code, 0, printed)
+        self.assertEqual(self.drive.calls, [])
+        self.assertEqual(len(fake.uploaded('video')), 1)
+        result = fake.results[('job-0001-aaaa', 1)]
+        self.assertNotIn('video', result)
+        self.assertEqual(result['files']['video'], fake.uploaded('video')[0]['assetId'])
+
+    def test_a_pull_session_without_takes_or_cuts_still_ends_at_once(self):
+        fake = self.serve(FakeSession([], modes=[], storage={'video': 'drive'}, work={'takes': 0, 'cuts': 0}))
+        code, printed = self.run_session(fake)
+        self.assertEqual(code, 0, printed)
+        self.assertEqual((fake.claims, fake.ends[0]['reason']), (0, 'queue_empty'))
+
+
+@unittest.skipUnless(HAS_FFMPEG, 'ffmpeg and ffprobe are needed to make cuts')
+class CutTests(SessionTestCase):
+    """Cuts-only sessions: no GPU, inputs from Google Drive, Sci-epo's ffmpeg arguments, the cut back to Drive."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        folder = Path(tempfile.mkdtemp(prefix='sciepo-cut-'))
+        cls.other_video = w.render_rehearsal(make_take(output='ep01-c02.mp4'), folder / 'clip2.mp4', note='second').read_bytes()
+        music = folder / 'music.wav'
+        done = w.subprocess.run([w.find_tool('ffmpeg'), '-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000:duration=4',
+                                 '-ac', '2', str(music)], capture_output=True)
+        assert done.returncode == 0, done.stderr
+        cls.music = music.read_bytes()
+
+    def setUp(self):
+        super().setUp()
+        self.drive = FakeDrive()
+        for name, value in (('open_drive_session', mock.Mock(return_value=self.drive)), ('caption_font', mock.Mock(side_effect=w.font_file))):
+            patcher = mock.patch.object(w, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def make_cut(self, cut_id='cut-0001-aaaaaaaa', inputs=None, captions=True, music=True):
+        inputs = inputs or [self.real_video, self.other_video]
+        entries = []
+        for index, data in enumerate(inputs, start=1):
+            file_id = self.drive.add_file(data, f'ep01-c0{index}-t1.mp4')
+            entries.append({'name': f'clip-0{index}.mp4', 'clipId': f'c0{index}', 'drive': {'id': file_id, 'name': f'ep01-c0{index}-t1.mp4'},
+                            'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)})
+        return {'id': cut_id, 'batchId': 'batch-1', 'language': 'en', 'kind': 'episode', 'inputs': entries,
+                'music': {'name': 'music.wav', 'sha256': hashlib.sha256(self.music).hexdigest(), 'bytes': len(self.music)} if music else None,
+                'captions': [{'name': 'caption-001.txt', 'text': 'Last order.\n最后一单'}] if captions else [],
+                'output': {'name': f'ep01-en-{cut_id[-4:]}.mp4', 'drive': {'folder': CUT_FOLDER, 'share': 'link'}}, 'timeoutSeconds': 300}
+
+    @staticmethod
+    def concat(font, music=True, captions=True):
+        """Real ffmpeg arguments, as Sci-epo's planner would build them: two clips joined, music mixed under, a caption drawn."""
+        graph = '[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]'
+        graph += ';[a][2:a]amix=inputs=2:duration=first[am]' if music else ''
+        if captions:
+            font_option = 'fontfile=caption-font.ttc:' if font else ''
+            graph += f';[v]drawtext={font_option}textfile=caption-001.txt:fontsize=32:fontcolor=white:x=20:y=20[vt]'
+        return ['-y', '-hide_banner', '-nostdin', '-i', 'clip-01.mp4', '-i', 'clip-02.mp4', *(['-i', 'music.wav'] if music else []),
+                '-filter_complex', graph, '-map', '[vt]' if captions else '[v]', '-map', '[am]' if music else '[a]',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', 'cut.mp4']
+
+    def args(self, plan=None):
+        """Sci-epo's args endpoint: pass 1 measures the music, the render pass joins the clips; `plan` overrides per cut."""
+        plan = plan or {}
+
+        def answer(cut_id, body):
+            custom = plan.get(cut_id, {})
+            if 'measured' not in body:
+                return {'args': custom.get('pass1', ['-hide_banner', '-nostdin', '-i', 'music.wav', '-af', 'volumedetect', '-f', 'null', '-'])}
+            return {'args': custom.get('render', self.concat(body['font'])), 'fallback': custom.get('fallback', self.concat(False, captions=False)),
+                    'warnings': ['the music is 2 s shorter than the cut']}
+        return answer
+
+    def cuts_session(self, cuts, plan=None, **options):
+        return self.serve(FakeSession([{'cut': c} for c in cuts], modes=[], stacks=[], references=[], storage={'video': 'drive'},
+                                      work={'takes': 0, 'cuts': len(cuts)}, music=self.music, cut_args=self.args(plan), **options))
+
+    def test_a_cuts_only_session_skips_the_gpu_and_makes_the_cut_in_drive(self):
+        cut = self.make_cut()
+        fake = self.cuts_session([cut])
+        code, printed = self.run_session(fake)
+        self.assertEqual(code, 0, printed)
+        self.query_gpu.assert_not_called()
+        stages = fake.stages()
+        self.assertFalse({'gpu', 'installing', 'downloading', 'starting_comfyui', 'error'} & set(stages))
+        self.assertEqual([s for s in stages if s in ('connected', 'ready', 'cutting', 'uploading', 'finishing')],
+                         ['connected', 'ready', 'cutting', 'uploading', 'finishing'])
+        self.assertIn('no GPU', next(e for e in fake.events if e['stage'] == 'ready')['message'])
+        self.assertEqual(sorted(self.drive.downloads), sorted(i['drive']['id'] for i in cut['inputs']))
+        self.assertEqual(fake.music_gets, 1)
+        font = w.font_file() is not None
+        self.assertEqual([body for _, body in fake.args_calls][0], {'audio': {'clip-01.mp4': True, 'clip-02.mp4': True}, 'font': font})
+        second = fake.args_calls[1][1]
+        self.assertEqual((second['audio'], second['font']), (fake.args_calls[0][1]['audio'], font))
+        self.assertIn('mean_volume', second['measured'])
+        result = fake.cut_results[cut['id']]
+        self.assertEqual(result['status'], 'done', result)
+        stored = self.drive.files[result['drive']['id']]
+        self.assertEqual(result['drive'], {'id': result['drive']['id'], 'name': cut['output']['name']})
+        self.assertEqual((result['sha256'], result['bytes']), (hashlib.sha256(stored['data']).hexdigest(), len(stored['data'])))
+        self.assertEqual(self.drive.path_of(stored['parent']), CUT_FOLDER)
+        self.assertEqual(self.drive.permissions, [(result['drive']['id'], {'type': 'anyone', 'role': 'reader'})])
+        self.assertAlmostEqual(result['seconds'], 4.0, delta=0.1)
+        self.assertIn('Integrated loudness', result['loudness'])
+        self.assertIn('True peak', result['loudness'])
+        self.assertEqual(result['warnings'], ['the music is 2 s shorter than the cut'])  # the captions were drawn
+        probe = self.dir / 'probe.mp4'
+        probe.write_bytes(stored['data'])
+        info = w.ffprobe_info(probe)
+        self.assertEqual({s['codec_type'] for s in info['streams']}, {'video', 'audio'})
+        self.assertGreaterEqual(len(fake.cut_heartbeats), 1)
+        self.assertEqual(fake.uploads, [])
+        self.assertFalse((self.dir / 'work' / 'cuts' / cut['id'][:8]).exists())
+        self.assertEqual(fake.ends[0]['reason'], 'queue_empty')
+        self.assertIn('cuts: 1 done, 0 failed', fake.ends[0]['summary']['message'])
+        self.assertNotIn(ACCOUNT, sent_to_sciepo(fake))
+
+    def test_without_a_caption_font_the_worker_says_so(self):
+        cut = self.make_cut()
+        fake = self.cuts_session([cut])
+        with mock.patch.object(w, 'caption_font', return_value=None):
+            code, printed = self.run_session(fake)
+        self.assertEqual(code, 0, printed)
+        self.assertEqual([body['font'] for _, body in fake.args_calls], [False, False])
+        self.assertEqual(fake.cut_results[cut['id']]['status'], 'done')
+
+    def test_failed_cuts_post_failed_and_the_fallback_saves_a_render(self):
+        bad_hash = self.make_cut('cut-0001-aaaaaaaa')
+        bad_hash['inputs'][1]['sha256'] = '0' * 64
+        fallback = self.make_cut('cut-0002-bbbbbbbb')
+        broken = self.make_cut('cut-0003-cccccccc')
+        not_a_list = self.make_cut('cut-0004-dddddddd')
+        plan = {fallback['id']: {'render': ['-y', '-i', 'clip-01.mp4', '-vf', 'nosuchfilter', 'cut.mp4']},
+                broken['id']: {'render': ['-y', '-i', 'missing.mp4', 'cut.mp4'], 'fallback': None},
+                not_a_list['id']: {'pass1': '-i music.wav -f null -'}}
+        fake = self.cuts_session([bad_hash, fallback, broken, not_a_list], plan)
+        code, printed = self.run_session(fake)
+        self.assertEqual(code, 3, printed)
+        results = fake.cut_results
+        self.assertEqual({k: r['status'] for k, r in results.items()},
+                         {bad_hash['id']: 'failed', fallback['id']: 'done', broken['id']: 'failed', not_a_list['id']: 'failed'})
+        self.assertIn('SHA-256', results[bad_hash['id']]['error'])
+        self.assertIn('could not render the cut', results[broken['id']]['error'])
+        self.assertIn('not a list of ffmpeg arguments', results[not_a_list['id']]['error'])
+        self.assertTrue(all(len(r.get('error', '')) <= 500 for r in results.values()))
+        self.assertEqual(results[fallback['id']]['warnings'][0], 'the music is 2 s shorter than the cut')
+        self.assertIn('fallback pass without captions', results[fallback['id']]['warnings'][1])
+        self.assertEqual(len(self.drive.permissions), 1)
+        self.assertEqual((fake.claims, fake.ends[0]['reason']), (4, 'failures'))
+        self.assertIn('cuts: 1 done, 3 failed', fake.ends[0]['summary']['message'])
+        self.assertEqual(list((self.dir / 'work' / 'cuts').iterdir()), [])
+
+    def test_stop_now_kills_ffmpeg_and_leaves_the_cut_to_sci_epo(self):
+        cut = self.make_cut()
+        fake = None
+        endless = ['-hide_banner', '-nostdin', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-t', '3600', '-c:v', 'libx264', '-f', 'null', '-']
+        base = self.args({cut['id']: {'render': endless}})
+
+        def answer(cut_id, body):
+            if 'measured' in body:
+                fake.stop = 'now'
+            return base(cut_id, body)
+        fake = self.cuts_session([cut, self.make_cut('cut-0002-bbbbbbbb')])
+        fake.cut_args = answer
+        started = time.monotonic()
+        code, printed = self.run_session(fake)
+        self.assertEqual(code, 0, printed)
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(fake.cut_results, {})
+        self.assertEqual(self.drive.permissions, [])
+        self.assertEqual((fake.claims, fake.ends[0]['reason']), (1, 'stopped'))
+        self.assertFalse((self.dir / 'work' / 'cuts' / cut['id'][:8]).exists())
 
 
 if __name__ == '__main__':

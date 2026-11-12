@@ -38,7 +38,8 @@ function formatFields(b:Record<string,unknown>,stored?:Brief):Pick<Brief,'format
  try{return {format,durationTarget:raw===undefined||raw===null?{...DEFAULT_DURATION_TARGET}:parseDurationTarget(raw)};}catch(error){return fail(400,error instanceof Error?error.message:'目标时长无效。');}
 }
 function brief(value:unknown,stored?:Brief):Brief {const b=obj(value);const format=formatFields(b,stored);let lengthTarget;try {if(b.lengthTarget!==undefined&&b.lengthTarget!==null)lengthTarget=parseLengthTarget(b.lengthTarget);}catch(error){return fail(400,error instanceof Error?error.message:'篇幅范围无效。');}return {title:str(b.title,'系列标题',200),premise:str(b.premise,'故事前提'),characters:str(b.characters,'人物资料',30000,true),worldRules:str(b.worldRules,'世界规则',30000,true),authorRules:str(b.authorRules,'作者要求',30000,true),...(b.language!==undefined?{language:validLanguage(b.language)}:{}),...(b.glossary!==undefined?{glossary:str(b.glossary,'术语表',30000,true)}:{}),...(lengthTarget?{lengthTarget}:{}),...format};}
-export interface AppOptions { publicOrigin?:string; production?:ProductionOptions; media?:{dir?:string;quotaMb?:number}; workerPublicUrl?:string; cuts?:CutsOptions }
+/** videoStorage drive: videos stay in the worker's Google Drive and the worker makes the cuts; media (default): both on this server. */
+export interface AppOptions { publicOrigin?:string; production?:ProductionOptions; media?:{dir?:string;quotaMb?:number}; workerPublicUrl?:string; cuts?:CutsOptions; videoStorage?:'media'|'drive' }
 export function createApp(store:Store, providers:{live?:ModelProvider;demo:ModelProvider;managed?:ProviderManager}, root=process.cwd(), options:AppOptions={}) {
  const auth=options.publicOrigin?new Auth(store.db,options.publicOrigin):undefined;
  const clock=options.production?.clock??(()=>new Date());
@@ -47,8 +48,9 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
  const stacks=new Stacks(root);
  const production=new Production(store,fail,id,{...options.production,media,stacks});
  // Cuts start their runner here, after running cuts of an earlier server process have gone back to the queue.
- const cuts=new Cuts(store,media,fail,id,{clock,...options.cuts});
- const sessions=new Sessions(store,media,stacks,production,fail,id,{clock,...(options.workerPublicUrl??auth?.origin?{publicUrl:options.workerPublicUrl??auth!.origin}:{}),onTakeRendered:jobId=>cuts.takeRendered(jobId)});
+ const videoStorage=options.videoStorage??'media';
+ const cuts=new Cuts(store,media,fail,id,{clock,...options.cuts,...(videoStorage==='drive'?{runner:'worker' as const}:{})});
+ const sessions=new Sessions(store,media,stacks,production,fail,id,{clock,...(options.workerPublicUrl??auth?.origin?{publicUrl:options.workerPublicUrl??auth!.origin}:{}),onTakeRendered:jobId=>cuts.takeRendered(jobId),videoStorage,cuts});
  function project(pid:string){return store.get('projects',pid)??fail(404,'找不到系列。');}
  function episode(eid:string){return store.get('episodes',eid)??fail(404,'找不到集数。');}
  function revision(rid:string){return store.get('revisions',rid)??fail(404,'找不到剧本版本。');}
@@ -193,7 +195,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
  }
  async function api(req:Request,url:URL){
   const parts=url.pathname.split('/').filter(Boolean), a=parts[1], target=parts[2], action=parts[3], method=req.method;
-  if(method==='GET'&&a==='status'){const live=providers.managed?providers.managed.ready():!!providers.live;return {mode:live?'live':'unconfigured',modelLabel:live?'创作模型配置已加载':'尚未配置真实模型',...(providers.managed?{management:true}:{})};}
+  if(method==='GET'&&a==='status'){const live=providers.managed?providers.managed.ready():!!providers.live;return {mode:live?'live':'unconfigured',modelLabel:live?'创作模型配置已加载':'尚未配置真实模型',...(videoStorage==='drive'?{videoStorage}:{}),...(providers.managed?{management:true}:{})};}
   if(method==='GET'&&a==='providers'&&!target)return providers.managed?.catalog()??fail(503,'模型管理尚未启用。');
   if(method==='GET'&&a==='projects'&&!target)return store.all('projects');
   if(method==='GET'&&a==='projects'&&target){const p=project(target);sessions.refreshProject(p.id);return store.bundle(p.id);}
@@ -221,7 +223,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    const versions=languages.map(language=>{
     const cut=cuts.delivered(r.id,language),batch=cut?store.get('render_batches',cut.batchId):undefined;
     return {language,sourceRevisionId:r.id,localizationId:language===scriptLanguage(r)?null:store.all('localizations').filter(l=>l.sourceRevisionId===r.id&&l.language===language).at(-1)?.id??null,available:language===scriptLanguage(r)||store.all('localizations').some(l=>l.sourceRevisionId===r.id&&l.language===language),
-     cut:cut?.output&&batch?{id:cut.id,sha256:cut.output.sha256,seconds:cut.output.seconds,batchId:batch.id,shotListId:batch.shotListId,localizationId:batch.adaptations[language]??null}:null,
+     cut:cut?.output&&batch?{id:cut.id,sha256:cut.output.sha256,seconds:cut.output.seconds,...(cut.output.drive?{drive:{id:cut.output.drive.id,name:cut.output.drive.name,url:`https://drive.google.com/file/d/${cut.output.drive.id}/view`}}:{}),batchId:batch.id,shotListId:batch.shotListId,localizationId:batch.adaptations[language]??null}:null,
      productionStatus:cut?.output&&batch?'delivered' as const:'planning_only' as const};
    });
    const delivered=versions.filter(v=>v.cut).length,productionStatus=!delivered?'planning_only':delivered===versions.length?'delivered':'partly_delivered';
@@ -443,7 +445,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
  }
  const appFetch=async function fetch(req:Request):Promise<Response>{
   const url=new URL(req.url);
-  const headers={'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
+  const headers={'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer','content-security-policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src https://drive.google.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
   try{
    if(auth?url.host!==new URL(auth.origin).host:!['127.0.0.1','localhost','[::1]'].includes(url.hostname))return fail(403,'请求域名不正确。');
    const write=!['GET','HEAD'].includes(req.method),origin=req.headers.get('origin'),expectedOrigin=auth?.origin??url.origin;

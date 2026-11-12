@@ -31,11 +31,14 @@ const quotaMb=Number(process.env.SCIEPO_MEDIA_QUOTA_MB??5120);
 if(!Number.isFinite(quotaMb)||quotaMb<=0)throw new Error('SCIEPO_MEDIA_QUOTA_MB 需为正数。');
 const workerPublicUrl=process.env.SCIEPO_WORKER_PUBLIC_URL;
 if(workerPublicUrl&&!/^https:\/\/[^\s/?#]+\/?$/u.test(workerPublicUrl))throw new Error('SCIEPO_WORKER_PUBLIC_URL 需为 https 地址，例如隧道地址。');
-const app=createApp(store,{demo:demoProvider,managed},root,{publicOrigin,media:{dir:mediaDir,quotaMb},...(workerPublicUrl?{workerPublicUrl}:{})});
+const videoStorage=process.env.SCIEPO_VIDEO_STORAGE??'media';
+if(videoStorage!=='media'&&videoStorage!=='drive')throw new Error('SCIEPO_VIDEO_STORAGE 只能是 media（视频存在这台服务器）或 drive（视频存进工作机的 Google Drive）。');
+const app=createApp(store,{demo:demoProvider,managed},root,{publicOrigin,media:{dir:mediaDir,quotaMb},videoStorage,...(workerPublicUrl?{workerPublicUrl}:{})});
 // JSON routes check their own limit; the larger cap is for media uploads, which are checked per kind while streaming.
 const server=Bun.serve({hostname:'127.0.0.1',port,idleTimeout:0,maxRequestBodySize:300*1024*1024,fetch:app});
 console.log(`Sci-epo: ${server.url} · ${managed.ready()?'创作模型配置已加载':'未配置真实模型；示例演练可用'}`);
-if(!app.cuts.tools())console.log('Sci-epo: 找不到 ffmpeg，成片剪辑不可用。安装 ffmpeg 后重启，或用 SCIEPO_FFMPEG 和 SCIEPO_FFPROBE 写明路径。');
+if(videoStorage==='drive')console.log('Sci-epo: 视频存进工作机的 Google Drive，成片由渲染会话在 Colab 上剪辑。');
+else if(!app.cuts.tools())console.log('Sci-epo: 找不到 ffmpeg，成片剪辑不可用。安装 ffmpeg 后重启，或用 SCIEPO_FFMPEG 和 SCIEPO_FFPROBE 写明路径。');
 // Optional second listener with only the worker API, for a tunnel from Colab to a Sci-epo on this computer.
 const workerPort=process.env.SCIEPO_WORKER_PORT?Number(process.env.SCIEPO_WORKER_PORT):undefined;
 const workerServer=workerPort?Bun.serve({hostname:'127.0.0.1',port:workerPort,idleTimeout:0,maxRequestBodySize:80*1024*1024,fetch:app.worker}):undefined;

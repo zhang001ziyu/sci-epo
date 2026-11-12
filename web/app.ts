@@ -43,7 +43,7 @@ let bundle: ProjectBundle | null = null;
 let episodeId = saved.episodeId ?? '';
 let revisionId = '';
 let tab: Tab = 'script';
-let status: {mode: 'live' | 'unconfigured'; modelLabel: string;management?:boolean} = { mode: 'unconfigured', modelLabel: '正在检查' };
+let status: {mode: 'live' | 'unconfigured'; modelLabel: string;management?:boolean;videoStorage?:'media'|'drive'} = { mode: 'unconfigured', modelLabel: '正在检查' };
 let providerPage=location.hash==='#providers';
 let pending = '';
 let error = '';
@@ -144,7 +144,7 @@ const shotListPanel=new ShotListPanel({run,post,reload:async revisionId=>{if(bun
 const shotContext=()=>({bundle:bundle!,revision:revision()!,episode:episode()!,busy:!!pending,live:status.mode==='live',dirty:dirty(),preferredLanguage:shownLanguage()});
 // A bundle of another series never replaces the open one, so a late polling answer cannot switch series.
 const productionPanel=new ProductionPanel({run,api,post,upload,setBundle:b=>{if(bundle&&bundle.project.id===b.project.id)bundle=b;},render,patch:()=>patchProduction(),notice:message=>{notice=message;},fail:message=>{error=message;render();},origin:()=>location.origin,copy:async text=>{await navigator.clipboard.writeText(text);},confirm:message=>window.confirm(message)});
-const productionContext=()=>({bundle:bundle!,episode:episode()!,revision:revision()!,busy:!!pending});
+const productionContext=()=>({bundle:bundle!,episode:episode()!,revision:revision()!,busy:!!pending,...(status.videoStorage?{videoStorage:status.videoStorage}:{})});
 async function loadProject(id: string, selectRevision?: string) {
   bundle = await api<ProjectBundle>(`/api/projects/${encodeURIComponent(id)}`);
   if (!bundle.episodes.some(e => e.id === episodeId)) episodeId = bundle.episodes[0]?.id ?? '';

@@ -104,6 +104,12 @@ Sci-epo cuts on its own host with ffmpeg, without GPU time.
 
 Media lives in `SCIEPO_MEDIA_DIR` (by default `data/media` next to the database), named by SHA-256, under a quota (`SCIEPO_MEDIA_QUOTA_MB`, 5120 by default). At 480×864, one episode in two languages with every take and both cuts is about 60 MB. Back the folder up with the database. See [self-hosting](self-hosting.md) for ffmpeg, request size limits and fonts on a server.
 
+### Videos in Google Drive
+
+With `SCIEPO_VIDEO_STORAGE=drive`, no video reaches the server. The notebook asks once for Google authorization; the worker then writes every take and every cut to the Drive of the Colab account, in `Sci-epo/<series>/<episode>/<batch>/`, shares each file as "anyone with the link can view", and reports its Drive ID, size and SHA-256. Contact sheets, keyframes, QA data, references, music and reports stay in the media store. The review panel plays a Drive video in Drive's preview frame and links to it; the delivery report and the publication manifest carry the link.
+
+Cuts are then made by a session's worker: Sci-epo plans the cut and builds each ffmpeg command, the worker downloads the takes from Drive, runs the commands and uploads the result. A queued cut waits for the next session. A session for cuts alone needs no GPU, so a CPU runtime is enough. The protocol is in [`drive-storage.md`](../.kiro/specs/production-pipeline/drive-storage.md).
+
 ## Limits
 
 - The H3 LITE stack has only the reference workflow (R2V) and is tested on Colab's G4 runtime (RTX PRO 6000 Blackwell). Its text encoder uses NVFP4, a Blackwell format; other GPUs need your override until they are tested.

@@ -5,6 +5,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { BatchReference, MediaAsset, MediaKind, PublicRenderSession, QaCheck, RenderBatch, RenderJobV2, RenderSession, SessionEnd, SessionEstimate, SessionEvent, SpeechLine, Take, TakeQa } from '../types';
 import { framesToSeconds } from '../core/h3';
 import { defaultRate, median, rateKey, shotTimes, spokenLines } from '../core/renderPlan';
+import { driveFolder, parseDriveFile, type Cuts } from './cuts';
 import type { MediaStore } from './media';
 import type { Production } from './production';
 import type { StackProfile, Stacks } from './stacks';
@@ -17,7 +18,7 @@ const LEASE_MS = 15 * 60_000, LOST_MS = 3 * 60_000, HEARTBEAT_SECONDS = 30, TAKE
 const LIVE = new Set<RenderSession['status']>(['waiting', 'connected', 'setting_up', 'rendering', 'finishing', 'lost']);
 const ENDS: readonly SessionEnd[] = ['queue_empty', 'budget', 'stopped', 'not_current', 'failures', 'error', 'lost', 'expired'];
 const STAGE_STATUS: Record<string, RenderSession['status']> = {connected: 'connected', gpu: 'setting_up', installing: 'setting_up', downloading: 'setting_up', starting_comfyui: 'setting_up',
-  ready: 'rendering', rendering: 'rendering', checking: 'rendering', uploading: 'rendering', finishing: 'finishing'};
+  ready: 'rendering', rendering: 'rendering', checking: 'rendering', uploading: 'rendering', cutting: 'rendering', finishing: 'finishing'};
 const FILE_KINDS: Record<string, MediaKind> = {video: 'take_video', 'contact-sheet': 'qa_image', keyframe: 'qa_image', qa: 'qa_data'};
 const TOKEN_TEXT = /sciepo_(?:ss|wk)_[A-Za-z0-9_-]{20,}/gu;
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -29,7 +30,8 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 export const publicSession = ({tokenHash: _hash, ...session}: RenderSession): PublicRenderSession => session;
 
 /** onTakeRendered runs after a worker's take is stored as rendered, for example to queue a draft cut. */
-export interface SessionOptions { clock: () => Date; publicUrl?: string; onTakeRendered?: (jobId: string) => void }
+/** videoStorage drive: take videos go to the worker's Google Drive and the worker also makes the queued cuts (cuts). */
+export interface SessionOptions { clock: () => Date; publicUrl?: string; onTakeRendered?: (jobId: string) => void; videoStorage?: 'media' | 'drive'; cuts?: Cuts }
 
 export class Sessions {
   constructor(private store: Store, private media: MediaStore, private stacks: Stacks, private production: Production, private fail: Fail, private id: () => string, private options: SessionOptions) {}
@@ -40,6 +42,10 @@ export class Sessions {
   private jobs(batchIds: string[]): RenderJobV2[] { const ids = new Set(batchIds); return this.store.all('render_jobs_v2').filter(j => ids.has(j.batchId)).sort((a, b) => batchIds.indexOf(a.batchId) - batchIds.indexOf(b.batchId) || a.order - b.order); }
   private projectId(batch: RenderBatch) { return this.store.get('episodes', batch.episodeId)?.projectId ?? this.fail(404, '找不到集数。'); }
   private code(token: string, origin: string) { return `${(this.options.publicUrl ?? origin).replace(/\/+$/u, '')}#${token}`; }
+  private get drive(): boolean { return this.options.videoStorage === 'drive'; }
+  /** True while a session can still talk to Sci-epo, so a cut it holds is not handed to another worker. */
+  private live = (sessionId: string): boolean => { const s = this.store.get('render_sessions', sessionId); return !!s && LIVE.has(this.refresh(s).status) && this.refresh(s).status !== 'lost'; };
+  private queuedCuts(batchIds: string[]): number { return this.drive ? this.options.cuts?.queuedFor(batchIds, this.live) ?? 0 : 0; }
   private newToken() { const token = `sciepo_ss_${randomBytes(32).toString('base64url')}`; return {token, tokenHash: sha256(token)}; }
 
   /** The take a worker should render next for this job: a queued one, or one whose lease ran out. */
@@ -122,7 +128,7 @@ export class Sessions {
     });
     const mode = body.mode === 'rehearsal' ? 'rehearsal' as const : body.mode === undefined || body.mode === 'pull' ? 'pull' as const : this.fail(400, '会话方式只能是 pull 或 rehearsal。');
     const estimate = this.estimate(batches, mode);
-    if (!estimate.takes) this.fail(409, '这些批次没有待渲染的 take。');
+    if (!estimate.takes && !this.queuedCuts(ids)) this.fail(409, '这些批次没有待渲染的 take，也没有排队等剪辑的成片。');
     const budgetMinutes = body.budgetMinutes === undefined ? Math.max(15, Math.ceil(1.5 * (estimate.setupMinutes + estimate.renderMinutes))) : num(body.budgetMinutes, 5, 720) ?? this.fail(400, '时间预算需为 5–720 分钟。');
     const waitForRetakesMinutes = body.waitForRetakesMinutes === undefined ? 0 : num(body.waitForRetakesMinutes, 0, 60) ?? this.fail(400, '等待重拍的时间需为 0–60 分钟。');
     const hours = body.expiresHours === undefined ? 6 : num(body.expiresHours, 1, 24) ?? this.fail(400, '会话码有效期需为 1–24 小时。');
@@ -153,6 +159,7 @@ export class Sessions {
       const ended: RenderSession = {...session, status: 'ended', end: session.status === 'lost' ? 'lost' : 'stopped', endedAt, tokenHash: null, summary: {minutes, takesRendered: 0, takesFailed: 0, undelivered: 0}};
       this.store.db.transaction(() => {
         undelivered = this.releaseTakes(session.id);
+        this.options.cuts?.releaseFor(session.id);
         const takes = this.jobs(session.batchIds).flatMap(j => j.takes).filter(t => t.sessionId === session.id);
         ended.summary = {minutes, takesRendered: takes.filter(t => t.status === 'rendered').length, takesFailed: takes.filter(t => t.status === 'failed').length, undelivered};
         this.store.update('render_sessions', ended);
@@ -186,7 +193,7 @@ export class Sessions {
     const nowMs = this.nowMs();
     if (nowMs > Date.parse(session.expiresAt)) {
       const expired: RenderSession = {...session, status: 'expired', end: 'expired', endedAt: this.now(), tokenHash: null};
-      this.store.db.transaction(() => { this.releaseTakes(session.id); this.store.update('render_sessions', expired); })();
+      this.store.db.transaction(() => { this.releaseTakes(session.id); this.options.cuts?.releaseFor(session.id); this.store.update('render_sessions', expired); })();
       return expired;
     }
     if (session.status !== 'waiting' && session.status !== 'lost' && session.lastSeenAt && nowMs - Date.parse(session.lastSeenAt) > LOST_MS) {
@@ -231,6 +238,7 @@ export class Sessions {
     if (req.method === 'GET' && a === 'session' && b === 'worker.py' && !c) return this.program();
     if (req.method === 'GET' && a === 'references' && b && !c) return this.reference(live, req, b);
     if (req.method === 'PUT' && a === 'takes' && b && c && d === 'files' && e) return Response.json(await this.upload(live, req, url, b, c, e));
+    if (req.method === 'GET' && a === 'cuts' && b && c === 'music' && !d) return this.cutsApi().musicFor(live, b, req);
     if (req.method !== 'POST') return Response.json({error: '未找到接口。'}, {status: 404});
     const body = await this.body(req);
     if (a === 'session' && b === 'events' && !c) return Response.json(this.events(live, body));
@@ -238,8 +246,13 @@ export class Sessions {
     if (a === 'session' && b === 'end' && !c) return Response.json(this.end(live, body));
     if (a === 'takes' && b && c && d === 'heartbeat' && !e) return Response.json(this.heartbeat(live, b, c));
     if (a === 'takes' && b && c && d === 'result' && !e) return Response.json(this.result(live, b, c, body));
+    if (a === 'cuts' && b && c === 'heartbeat' && !d) return Response.json(this.cutsApi().heartbeatFor(live, b));
+    if (a === 'cuts' && b && c === 'args' && !d) return Response.json(this.cutsApi().argsFor(live, b, body));
+    if (a === 'cuts' && b && c === 'result' && !d) return Response.json(this.cutsApi().resultFor(live, b, body));
     return Response.json({error: '未找到接口。'}, {status: 404});
   }
+
+  private cutsApi(): Cuts { return this.drive && this.options.cuts ? this.options.cuts : this.fail(404, '这个 Sci-epo 在服务器上剪辑成片，工作机不剪。'); }
 
   private async body(req: Request): Promise<Body> {
     if (Number(req.headers.get('content-length') ?? 0) > BODY_LIMIT) this.fail(413, '请求内容过长。');
@@ -284,6 +297,8 @@ export class Sessions {
       worker: {sha256: program.sha256, bytes: program.bytes.length},
       stacks: session.mode === 'rehearsal' ? [] : stackIds.map(id => this.stacks.document(id)).filter(Boolean),
       modes: [...modes],
+      storage: {video: this.drive ? 'drive' : 'media'},
+      work: {takes: this.jobs(session.batchIds).filter(j => this.pending(j, nowMs)).length, cuts: this.queuedCuts(session.batchIds)},
       references: this.references(session).map(r => ({name: r.name, sha256: r.sha256, kind: r.kind, bytes: this.store.get('media_assets', r.assetId)?.bytes ?? 0})),
       estimate: session.estimate,
     };
@@ -328,6 +343,11 @@ export class Sessions {
       const nowMs = this.nowMs();
       const job = this.jobs(session.batchIds).find(j => this.pending(j, nowMs));
       if (!job) {
+        // With Drive storage the worker also makes the cuts that wait for these batches, before it waits or ends.
+        if (this.drive && nowMs < this.budgetEnd(session)) {
+          const cut = this.options.cuts?.claimFor(session, this.live);
+          if (cut) return {cut};
+        }
         const waitMs = session.settings.waitForRetakesMinutes * 60_000, since = Date.parse(session.lastResultAt ?? session.startedAt ?? session.createdAt);
         if (waitMs && nowMs - since < waitMs && nowMs + 30_000 < this.budgetEnd(session)) return {wait: 30};
         return {end: 'queue_empty' as SessionEnd};
@@ -346,8 +366,14 @@ export class Sessions {
         steps: preset.turbo ? stack?.turboSteps[prompt.mode] ?? 4 : preset.steps, turbo: preset.turbo, stack: preset.stack,
         images: prompt.images, audio: prompt.audio, output: job.outputName, shots: shotTimes(clip, list),
         expectedLines: job.languages.flatMap(language => spokenLines(clip, list, language)), rehearsal: session.mode === 'rehearsal',
+        ...(this.drive ? {drive: {folder: this.folder(batch), share: 'link' as const}} : {}),
       }};
     })();
+  }
+
+  private folder(batch: RenderBatch): string[] {
+    const episode = this.store.get('episodes', batch.episodeId) ?? this.fail(404, '找不到集数。'), project = this.store.get('projects', episode.projectId) ?? this.fail(404, '找不到系列。');
+    return driveFolder(project, episode, batch);
   }
 
   private owned(session: RenderSession, jobId: string, n: string): {job: RenderJobV2; take: Take} {
@@ -366,6 +392,7 @@ export class Sessions {
   private async upload(session: RenderSession, req: Request, url: URL, jobId: string, n: string, fileKind: string) {
     const {job, take} = this.owned(session, jobId, n);
     const kind = FILE_KINDS[fileKind] ?? this.fail(404, '不支持这种文件。');
+    if (this.drive && kind === 'take_video') this.fail(409, '这个 Sci-epo 不在服务器上存视频：视频请存进 Google Drive，在结果里报 Drive 文件。');
     const shot = url.searchParams.get('shot');
     if (fileKind === 'keyframe' && !(shot && /^[A-Za-z0-9_-]{1,40}$/u.test(shot))) this.fail(400, '关键帧需要镜头编号。');
     const declared = Number(req.headers.get('content-length') ?? Number.NaN);
@@ -388,8 +415,17 @@ export class Sessions {
     const batch = this.store.get('render_batches', job.batchId)!, clip = batch.clips.find(c => c.id === job.clipId)!;
     let video: Take['video'];
     if (status === 'rendered') {
-      const asset = own(files.video, 'take_video') ?? this.fail(400, '渲染成功前要先上传视频。');
-      video = {assetId: asset.id, sha256: asset.sha256, bytes: asset.bytes, seconds: round2(num(body.seconds, 0, 600) ?? framesToSeconds(clip.frames))};
+      const seconds = round2(num(body.seconds, 0, 600) ?? framesToSeconds(clip.frames));
+      if (this.drive) {
+        const v = obj(body.video), drive = parseDriveFile(v.drive) ?? this.fail(400, '渲染成功要报视频在 Google Drive 里的文件。');
+        const sha = typeof v.sha256 === 'string' && /^[0-9a-f]{64}$/u.test(v.sha256) ? v.sha256 : this.fail(400, '视频的 SHA-256 无效。');
+        const bytes = typeof v.bytes === 'number' && Number.isSafeInteger(v.bytes) && v.bytes > 0 && v.bytes <= 4 * 1024 ** 3 ? v.bytes : this.fail(400, '视频的大小无效。');
+        if (files.video !== undefined) this.fail(400, '这个 Sci-epo 不在服务器上存视频，结果里不能有 files.video。');
+        video = {sha256: sha, bytes, seconds, drive};
+      } else {
+        const asset = own(files.video, 'take_video') ?? this.fail(400, '渲染成功前要先上传视频。');
+        video = {assetId: asset.id, sha256: asset.sha256, bytes: asset.bytes, seconds};
+      }
     }
     const qa = this.qa(body.qa, files, own), renderSeconds = num(obj(body.timing).renderSeconds, 0, 86_400), finishedAt = this.now();
     const {leaseExpiresAt: _lease, error: _error, ...rest} = take;
@@ -447,6 +483,7 @@ export class Sessions {
     const endedAt = this.now(), project = this.store.get('projects', session.projectId);
     this.store.db.transaction(() => {
       const undelivered = this.releaseTakes(session.id);
+      this.options.cuts?.releaseFor(session.id);
       const takes = this.jobs(session.batchIds).flatMap(j => j.takes).filter(t => t.sessionId === session.id);
       const minutes = round1((this.nowMs() - Date.parse(session.startedAt ?? session.createdAt)) / 60_000), rate = project?.productionSettings?.computeUnitsPerHour;
       const message = typeof obj(body.summary).message === 'string' ? scrub(obj(body.summary).message as string) : undefined;

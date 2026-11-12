@@ -49,7 +49,8 @@ export interface ProductionHooks {
   timers?: PanelTimers;
   now?(): number;
 }
-export interface ProductionContext { bundle: ProjectBundle; episode: Episode; revision: Revision; busy: boolean }
+/** videoStorage: 'drive' when take and cut videos live in Google Drive and cuts are made by a session's worker. */
+export interface ProductionContext { bundle: ProjectBundle; episode: Episode; revision: Revision; busy: boolean; videoStorage?: 'media' | 'drive' }
 type Field = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 const defaultTimers: PanelTimers = {set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>)};
 
@@ -317,7 +318,7 @@ export class ProductionPanel {
 
   /** Per language: the final cuts with their sign-off, the newest draft, and the form of a new final cut. */
   private cutArea(ctx: ProductionContext, batch: RenderBatch, jobs: RenderJobV2[], current: boolean, disabled: string): string {
-    const cuts = this.cutsOf(ctx, batch.id), music = (ctx.bundle.media ?? []).filter(m => m.kind === 'music');
+    const cuts = this.cutsOf(ctx, batch.id), music = (ctx.bundle.media ?? []).filter(m => m.kind === 'music'), worker = ctx.videoStorage === 'drive';
     if (!cuts.length && !jobs.some(j => j.takes.some(t => t.status === 'rendered'))) return '';
     const sections = batch.languages.map(language => {
       const mine = cuts.filter(c => c.language === language), draft = mine.find(c => c.kind === 'draft'), finals = mine.filter(c => c.kind === 'final');
@@ -325,7 +326,7 @@ export class ProductionPanel {
       const key = `${batch.id}:${language}`, form = this.cutForms.get(key), data = `data-id="${esc(batch.id)}" data-language="${esc(language)}"`;
       const items = [...finals, ...(draft ? [draft] : [])].map(cut => {
         const fresh = cutCurrent(cut, jobs);
-        return cutView(cut, {current: fresh, batch}) + cutSignOff(cut, {current: fresh && current, note: this.cutNotes.get(cut.id) ?? '', disabled});
+        return cutView(cut, {current: fresh, batch, worker}) + cutSignOff(cut, {current: fresh && current, note: this.cutNotes.get(cut.id) ?? '', disabled});
       }).join('');
       const waiting = rendered.missing.length ? `<p class="small muted">还有片段没有渲染好的 take：${rendered.missing.map(esc).join('、')}。全部渲染好后，Sci-epo 会自动剪一版草稿。</p>` : '';
       const redo = !rendered.missing.length && (!draft || draft.status === 'failed' || (draft.status === 'done' && !cutCurrent(draft, jobs)))
@@ -335,7 +336,7 @@ export class ProductionPanel {
         : form ? '' : `<button class="button small-button" data-action="production-cut-open" ${data} ${disabled}>剪辑正式成片…</button>`;
       return `<section class="cut-language"><h4>${esc(languageName(language))}</h4>${waiting}${items}<div class="language-toolbar">${redo}${final}</div>${form ? cutForm(batch, language, form, {music, disabled}) : ''}</section>`;
     }).join('');
-    return `<section class="cut-area"><h3>成片</h3><p class="small muted">草稿用每个片段最新渲染好的 take，供你连着看；正式成片只用你通过的 take，签收后才算交付。剪辑在运行 Sci-epo 的电脑上用 ffmpeg 完成，不花 GPU。</p>`
+    return `<section class="cut-area"><h3>成片</h3><p class="small muted">草稿用每个片段最新渲染好的 take，供你连着看；正式成片只用你通过的 take，签收后才算交付。${worker ? '视频不存在这台服务器上：take 和成片都存进 Colab 账号的 Google Drive，按链接分享。剪辑也在 Colab 上做，排队的成片由下一个渲染会话来剪；只剩剪辑时，Colab 选 CPU 运行时就够了。' : '剪辑在运行 Sci-epo 的电脑上用 ffmpeg 完成，不花 GPU。'}</p>`
       + `${sections}${musicUpload(batch.id, music, this.musicLicense, disabled)}</section>`;
   }
 
@@ -363,7 +364,7 @@ export class ProductionPanel {
     const saved = (value: number | undefined) => value === undefined ? '' : String(value);
     return `<div class="session-panel"><div class="eyebrow">RENDER SESSION</div><h3>渲染会话</h3>`
       + `${code && waiting ? codeOnce(code.code, waiting.mode, this.copied) : ''}${live.map(s => sessionLive(s, {now: this.now(), rate, disabled, pollError: this.pollError})).join('')}`
-      + `${current && !active.length ? sessionStart(batch, jobs, this.sessionDraft(batch.id), disabled) : ''}${!current && !live.length ? '<p class="small muted">这一批已不是当前制作版本，不能再开始渲染会话。</p>' : ''}`
+      + `${current && !active.length ? sessionStart(batch, jobs, this.sessionDraft(batch.id), disabled, (ctx.bundle.cuts ?? []).filter(c => c.batchId === batch.id && (c.status === 'queued' || c.status === 'running')).length) : ''}${!current && !live.length ? '<p class="small muted">这一批已不是当前制作版本，不能再开始渲染会话。</p>' : ''}`
       + `${last ? sessionSummary(last, {rate, readings: {before: draft.before ?? saved(last.readings?.before), after: draft.after ?? saved(last.readings?.after)}, disabled}) : ''}</div>`;
   }
 

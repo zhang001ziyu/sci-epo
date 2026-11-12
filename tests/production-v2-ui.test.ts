@@ -508,13 +508,30 @@ describe('cuts in the production tab', () => {
     ctx.bundle.cuts = [cut()];
     const html = harness(ctx).p.view(ctx);
     expect(html).toContain('<section class="cut-area"><h3>成片</h3>');
-    expect(html).toContain('<video controls playsinline preload="metadata" src="/api/media/cutvid"');
+    expect(html).toContain('<video class="cut-video" controls playsinline preload="metadata" src="/api/media/cutvid"');
     expect(html).toContain('79.2 秒 · 响度 -14 LUFS · 真峰值 -1.3 dBTP');
     expect(html).toContain(`没有字体 ${escaped}`);
     expect(html).not.toContain(attack);
     expect(html).toContain('每个片段都通过一条 take 后，才能剪正式成片');
     expect(html).toContain('href="/api/cuts/cut-zh/report"');
     expect(html).toContain('data-production-music-upload');
+  });
+
+  test('with Drive storage a cut plays in Drive\'s preview frame and a queued cut waits for a session', () => {
+    const {ctx} = fixture({live: false});
+    ctx.videoStorage = 'drive';
+    ctx.bundle.cuts = [cut({output: {drive: {id: 'drive_file_ABC123', name: `ep01 ${attack}.mp4`}, sha256: SHA_A, bytes: 16_000_000, seconds: 79.2, loudness: -14, truePeak: -1.3}}),
+      cut({id: 'cut-q', status: 'queued', output: undefined, language: 'en'})];
+    const html = harness(ctx).p.view(ctx);
+    expect(html).toContain('<iframe src="https://drive.google.com/file/d/drive_file_ABC123/preview"');
+    expect(html).toContain('href="https://drive.google.com/file/d/drive_file_ABC123/view"');
+    expect(html).not.toContain('/api/media/cutvid');
+    expect(html).not.toContain(attack);
+    expect(html).toContain('等一个渲染会话来剪');
+    expect(html).toContain('存进 Colab 账号的 Google Drive');
+    // An ID outside Drive's alphabet never becomes a link.
+    ctx.bundle.cuts = [cut({output: {drive: {id: 'x"><script>', name: 'bad'}, sha256: SHA_A, bytes: 1, seconds: 1, loudness: null, truePeak: null}})];
+    expect(harness(ctx).p.view(ctx)).not.toContain('drive.google.com/file/d/x');
   });
 
   test('the final-cut form reads the plan, keeps edits, and sends music, size and captions', async () => {
