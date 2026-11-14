@@ -174,7 +174,7 @@ export function shotTexts(list: Pick<ShotList, 'shots'>, revision: Pick<Revision
 export const totalDuration = (list: Pick<ShotList, 'shots'>): number => round(list.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0));
 
 /** Fine contact between a hand and a flame, which video models rarely act out correctly. */
-export const HARD_ACTION = /\b(smother|snuff|pinch(?:es|ed|ing)? out|cups? (?:the|a|his|her) (?:flame|match)|(?:palm|fingers?)\b[^.]{0,30}\b(?:flame|fire)|(?:flame|fire)\b[^.]{0,30}\b(?:palm|fingers?))|捂灭|掐灭|捏灭|(?:手心|手掌|掌心|手指)[^。]{0,12}(?:火苗|火焰)|(?:火苗|火焰)[^。]{0,12}(?:手心|手掌|掌心|手指)/iu;
+export const HARD_ACTION = /\b(smother|snuff|pinch(?:es|ed|ing)? out|cups? (?:the|a|his|her) (?:flame|match)|(?:palm|fingers?)\b[^.]{0,30}\b(?:flame|fire|burning|lit match)|(?:flame|fire)\b[^.]{0,30}\bpalm)|捂灭|掐灭|捏灭|(?:手心|手掌|掌心|手指)[^。]{0,12}(?:火苗|火焰|火柴)|(?:火苗|火焰)[^。]{0,12}(?:手心|手掌|掌心|手指)/iu;
 export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'too_short_for_content' | 'multiple_actions' | 'hard_action' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
 /** suggestedSeconds and splitAt are one-click fixes: the duration the content needs, and the line to split before. */
 export interface ShotWarning { kind: ShotWarningKind; message: string; shotId?: string; language?: string; suggestedSeconds?: number; splitAt?: number }

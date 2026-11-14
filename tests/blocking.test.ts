@@ -3,7 +3,7 @@ import { snapshotContext } from '../src/core';
 import { foldBlocking, openingState } from '../src/core/blocking';
 import { planRenderBatch, type RenderPlanInput } from '../src/core/h3';
 import { lineIndex, logicFindings, parseLedger } from '../src/core/logic';
-import { shotListWarnings } from '../src/core/shotList';
+import { HARD_ACTION, shotListWarnings } from '../src/core/shotList';
 import { SHORT_DRAMA_DEMO, shortDramaDemoLedger, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
 import type { LogicBlocking, LogicLedger, Revision, ShotList } from '../src/types';
 
@@ -108,5 +108,8 @@ describe('clips and shots', () => {
     const warnings = shotListWarnings(list(), {revision: r, adaptations: {}}).filter(w => w.kind === 'hard_action');
     expect(warnings.map(w => w.shotId)).toEqual(['sh8']);
     expect(warnings[0]!.message).toContain('“动作”和“结果”两个镜头');
+    // The wording of the rendered episode, and ordinary hand actions that are not flagged.
+    for (const line of ['Maya lunges across the counter and claps her bare palm over the burning match.', '玛雅用手掌死死捂住燃烧的火柴。']) expect(HARD_ACTION.test(line)).toBe(true);
+    for (const line of ['Leo lowers the flame straight toward the blue envelope.', 'She taps her cracked phone screen.', 'A bright flame flares up between his trembling fingers.']) expect(HARD_ACTION.test(line)).toBe(false);
   });
 });
