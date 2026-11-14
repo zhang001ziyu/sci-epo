@@ -85,8 +85,9 @@ const sentence = (t: string) => /[.!?]$/u.test(t) ? t : `${t}.`;
 export function settingSentences(bible: BibleContent, sceneId: string): string[] {
   const {location, props} = sceneSetting(bible, sceneId), out: string[] = [];
   if (location) out.push(sentence(`Setting: ${location.look}`));
-  // Props are described for when they are on screen, so a prop revealed later is not shown early.
-  if (props.length) out.push(sentence(`Whenever these props are on screen, they look exactly like this: ${props.map(p => p.look.replace(/[.]$/u, '')).join('; ')}`));
+  // Props are described for when the action shows them: a description is no reason to put a prop on screen, and a
+  // prop revealed later is not shown early. Where a prop is now comes from the clip's continuity, not from here.
+  if (props.length) out.push(sentence(`Show these props only where the action or the continuity puts them; when on screen, they look exactly like this: ${props.map(p => p.look.replace(/[.]$/u, '')).join('; ')}`));
   return out;
 }
 

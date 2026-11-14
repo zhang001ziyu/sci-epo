@@ -7,7 +7,7 @@ import { normalizeSpeakerName } from '../core/scriptLines';
 import { planJobsV2, takeSeed } from '../core/renderPlan';
 import { readinessItems, unconfirmedItems } from '../core/readiness';
 import { confirmedBible } from '../core/bible';
-import { logicGate } from '../core/logic';
+import { latestLogicCheck, logicGate } from '../core/logic';
 import { boundAdaptations, shotListStatus } from '../core/shotList';
 import type { MediaStore } from './media';
 import { DEFAULT_STACK_ID, RENDER_SIZES, type Stacks } from './stacks';
@@ -151,10 +151,12 @@ export class Production {
     return batch;
   }
 
-  /** The confirmed bible of the revision, as plan input: places and props go into every clip's first shot. */
+  /** Plan input from the revision: the confirmed bible's places and props, and the logic check's blocking, go into
+   * every clip's first shot. */
   private bibleOf(episode: Episode, revision: Revision) {
     const bible = confirmedBible(episode, revision);
-    return bible ? {bible: {locations: bible.locations, props: bible.props, scenes: bible.scenes}} : {};
+    const blocking = latestLogicCheck(this.store.all('logic_checks'), revision.id)?.ledger.blocking;
+    return {...(bible ? {bible: {locations: bible.locations, props: bible.props, scenes: bible.scenes}} : {}), ...(blocking ? {blocking} : {})};
   }
 
   private createBatch(listId: string, body: Record<string, unknown>) {

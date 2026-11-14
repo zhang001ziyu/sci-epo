@@ -18,11 +18,22 @@ export const LOGIC_GUIDANCE = `
 4. instructions：违背常理的要求或做法，比如“让人半夜千万别开灯”，却不说为什么。reasonRef 写正文里给出理由的那一行，没人给理由也没人问，就写 null。
 5. sightings：人物看见、发现、读到推动剧情的东西的每一行。visible：按正文写的位置和空间，她在那里能不能看见（yes、no、unclear），why 用一句中文说明。比如站在门口，看不到锁在抽屉里的东西。
 6. protagonist 写主角的名字。choices 只列主角亲自做出、本可以不做、要付出她在乎的代价（钱、安全、工作、关系）、并且改变了接下来发生什么的选择。照吩咐办事、走路、开门、看手机、被动看到东西都不算。没有就写空列表。
+7. blocking：人物站在哪、东西在哪、谁手里拿着什么。程序据此判断“够不够得着、有没有走过去”，并把每一行开始时的状态交给分镜和视频。只照正文记，不要替剧本补动作。
+   - zones：人物会待的区域，id 写 z1、z2……。同一间屋子的不同角落要分开（比如沙发旁、灶台旁、门口），同一个区域里伸手就能碰到。name 用中文；en 用能接在 is 后面的英文介词短语，例如 "by the front door"、"in the armchair by the window"。
+   - things：人物会拿、放、递、碰、打开、点燃、撕开的东西，id 写 t1、t2……。name 用中文，en 用英文名词短语（例如 "a brass key"）。ref 写它第一次出现的那一行；zone 写它一开始所在的区域，或者 holder 写一开始拿着它的人（只写一个，不知道就都写 null）。同一种东西的不同件要分开：一整盒和从盒里抽出的一支是两样东西；火苗、亮光是那样东西的状态，不是另一样东西。
+   - events：按正文顺序，列出每个改变人物位置、姿势、持物的动作，以及每个直接对东西动手的动作。同一行有几个动作就按先后列几项。kind：
+     at：人物在这一场第一次出现时的位置（zone）和姿势（posture）。只在每场第一次出现时用一次；之后位置变了，必须是正文里有 move、stand 或 sit。
+     move：走到另一个区域（zone 必填）。人物从门外进来也是 move。
+     stand、sit：站起来、坐下（sit 可写坐到哪个区域）。正文明确写站起来才算 stand；撑起上身、挺直腰不算。
+     take：拿起或接过 thing。put：把 thing 放下，zone 写放到哪个区域（放在身边就写 null）。give：把 thing 递给 to。
+     use：直接对 thing 动手：碰、按、打开、点燃、撕开、把手里的东西凑到它上面。with 写用来做这件事的、手里的东西（没有就 null）；state 写动作之后 thing 的状态，用英文短语，例如 "lit"、"open"、"torn"，没有变化写 null。
+     posture 只能是 standing、sitting、lying、kneeling，不是 at 就写 null。who 写剧本里的人名。不需要的字段写 null。
+   正文没写走过去，就不要列 move；正文没写拿起，就不要列 take。宁可让程序报出问题，也不要为了说得通补一个正文里没有的动作。
 `.trim();
 
 export function buildLogicMessages(revision: Revision): {role: 'system' | 'user'; content: string}[] {
   const brief = revision.context.brief;
-  const format = '{"protagonist":"主角名","offscreen":[{"character":"人名","messageRef":"s2:12","claims":[{"fact":"她知道的事","sourceKind":"self|present|told|sees|earlier|brief|none","sourceRef":"s1:3 或 null"}]}],"ending":{"ref":"s2:21","question":"结尾的问题","dependsOn":[{"thing":"打火机","kind":"prop|rule|relationship|fact","firstRef":"s2:21 或 null"}]},"setups":[{"thing":"铜钥匙","ref":"s1:5","payoffRef":null,"bearsOnEnding":false}],"instructions":[{"text":"别开灯","ref":"s1:3","reasonRef":null}],"sightings":[{"who":"人名","what":"看见的东西","ref":"s2:14","visible":"yes|no|unclear","why":"一句中文说明"}],"choices":[{"ref":"s1:9","choice":"主角的选择","cost":"她付出的代价"}]}';
+  const format = '{"protagonist":"主角名","offscreen":[{"character":"人名","messageRef":"s2:12","claims":[{"fact":"她知道的事","sourceKind":"self|present|told|sees|earlier|brief|none","sourceRef":"s1:3 或 null"}]}],"ending":{"ref":"s2:21","question":"结尾的问题","dependsOn":[{"thing":"打火机","kind":"prop|rule|relationship|fact","firstRef":"s2:21 或 null"}]},"setups":[{"thing":"铜钥匙","ref":"s1:5","payoffRef":null,"bearsOnEnding":false}],"instructions":[{"text":"别开灯","ref":"s1:3","reasonRef":null}],"sightings":[{"who":"人名","what":"看见的东西","ref":"s2:14","visible":"yes|no|unclear","why":"一句中文说明"}],"choices":[{"ref":"s1:9","choice":"主角的选择","cost":"她付出的代价"}],"blocking":{"zones":[{"id":"z1","name":"门口","en":"by the front door"}],"things":[{"id":"t1","name":"铜钥匙","en":"a brass key","ref":"s1:5","zone":"z1","holder":null}],"events":[{"ref":"s1:1","who":"人名","kind":"at|move|stand|sit|take|put|give|use","zone":"z1 或 null","posture":"standing|sitting|lying|kneeling 或 null","thing":"t1 或 null","with":"t2 或 null","to":"人名 或 null","state":"英文短语 或 null"}]}}';
   return [
     {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${LOGIC_GUIDANCE}\n输出格式：${format}。fact、question、why、choice、cost 用简体中文写。只返回这一个 JSON 对象。`},
     {role: 'user', content: JSON.stringify({

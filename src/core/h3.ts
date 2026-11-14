@@ -2,9 +2,11 @@
  * Deterministic and model-free, so every prompt is checked against the script before a worker sees it.
  * Formats follow MiniMax's official H3 prompt guides: base T2VA and full-reference R2V.
  * Browser-safe: no Node.js modules, so the workspace can reuse the constants and names. */
-import type { BibleContent, Localization, ProductionCharacter, ProductionProfile, RenderBatch, RenderClip, RenderJob, RenderPrompt, Revision, Shot, ShotList } from '../types';
+import type { BibleContent, Localization, LogicBlocking, ProductionCharacter, ProductionProfile, RenderBatch, RenderClip, RenderJob, RenderPrompt, Revision, Shot, ShotList } from '../types';
 import { settingSentences } from './bible';
+import { foldBlocking, openingState } from './blocking';
 import { scriptLanguage } from './languages';
+import { lineIndex } from './logic';
 import { dialoguePositions, inlineLabel, labelOnly, normalizeSpeakerName, scriptLines } from './scriptLines';
 
 export class RenderPlanError extends Error { override name = 'RenderPlanError'; }
@@ -165,6 +167,9 @@ export interface RenderPlanInput {
   musicMode?: 'bed' | 'native';
   /** The confirmed episode bible: the first shot of every clip names its scene's setting and props. */
   bible?: BibleContent;
+  /** Blocking from the accepted revision's logic check: the first shot of every clip states where its people are,
+   * how they stand and what they hold at its first line, because clips cannot see each other. */
+  blocking?: LogicBlocking;
 }
 export interface PlannedJob { clipId: string; language: string; order: number }
 
@@ -210,6 +215,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     if (list.shots.some(s => s.spoken.some(x => x.castId === id)) && !character?.voice && !character?.voiceSample) warnings.push(`角色 ${nameOf(id)} 没有声音描述，不同片段里的声音可能不一样。`);
   }
 
+  const fold = input.blocking ? foldBlocking(input.blocking, revision, lineIndex(revision)) : undefined;
   const {width, height} = input.size ?? h3Size(list.aspectRatio), orientation = list.aspectRatio === '9:16' ? 'vertical 9:16' : 'horizontal 16:9';
   const clips: RenderClip[] = planClips(list.shots, input.clipLimitSeconds ?? DEFAULT_CLIP_LIMIT).map(planned => {
     const clipWarnings = [...planned.warnings], seconds = framesToSeconds(planned.frames);
@@ -225,6 +231,15 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     const mode: RenderPrompt['mode'] = usedSubjects.length || usedVoices.length ? 'r2v' : 't2va';
     const subjectNo = new Map(usedSubjects.map((id, index) => [id, index + 1])), audioNo = new Map(usedVoices.map((id, index) => [id, index + 1]));
     const label = (id: string) => subjectNo.has(id) ? `<Subject ${subjectNo.get(id)}> ${nameOf(id)}` : nameOf(id);
+    // Where the clip's people are at its first line: clips cannot see each other, so each one starts from the script's state.
+    let continuity = '';
+    const opening = fold?.before(planned.shots[0]!.sceneId, planned.shots[0]!.firstLine);
+    if (opening && input.blocking) {
+      const people = inFrame.map(id => ({key: [cast.get(id), displayName.get(id)].find(n => n && opening.people.has(normalizeSpeakerName(n))) ?? cast.get(id) ?? id, name: label(id)}));
+      const {text, missing} = openingState(input.blocking, opening, people);
+      continuity = text;
+      if (missing.length) clipWarnings.push(`走位里 ${missing.join('、')} 没有英文写法，这一段的开场状态里没写它们。请重新做剧本逻辑检查。`);
+    }
 
     const prompts: Record<string, RenderPrompt> = {};
     for (const language of languages) {
@@ -241,6 +256,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
           const appearance = characterOf(id)?.appearance;
           if (subjectNo.has(id) || appearance) parts.push(sentence(`${label(id)} appears${appearance ? `, ${appearance}` : ''}`));
         }
+        if (index === 0 && continuity) parts.push(continuity);
         if (shot.composition) parts.push(sentence(shot.composition));
         const spokenLines = new Map(shot.spoken.map(s => [s.line, s.castId]));
         const englishDialogue = picture.dialogue.get(shot.sceneId) ?? new Map<number, string>();

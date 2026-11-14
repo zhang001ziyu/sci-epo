@@ -3,6 +3,7 @@
  * protagonist something), and the program decides the findings from it. Shot lists and video need every finding of
  * the accepted revision to be fixed in a new revision or kept by the author with a reason. Browser-safe. */
 import type { Episode, LogicCheck, LogicFinding, LogicLedger, Revision } from '../types';
+import { foldBlocking, parseBlocking } from './blocking';
 import { scriptLines } from './scriptLines';
 
 export class LogicError extends Error {}
@@ -68,7 +69,10 @@ export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>):
     const x = record(s, `第 ${i + 1} 个选择`);
     return {ref: ref(x.ref, '选择的位置'), choice: text(x.choice, '选择', 200), cost: text(x.cost, '代价', 200)};
   });
-  return {protagonist, offscreen, ending, setups, instructions, sightings, choices};
+  let blocking;
+  try { blocking = row.blocking === undefined || row.blocking === null ? undefined : parseBlocking(row.blocking, ref); }
+  catch (error) { return reject(error instanceof Error ? error.message : '走位格式无效。'); }
+  return {protagonist, offscreen, ending, setups, instructions, sightings, choices, ...(blocking ? {blocking} : {})};
 }
 
 export function parseLedgerOutput(raw: string, revision: Pick<Revision, 'scenes'>): LogicLedger {
@@ -120,6 +124,7 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
     title: `${ledger.protagonist} 整集没有做过一个有代价的选择`,
     detail: `${ledger.protagonist} 一直在走路、看手机、照吩咐做事，推动剧情的都是别人或消息。主角不做选择，观众就不会替她着急。`,
     fix: `给 ${ledger.protagonist} 一个要付代价的决定，比如冒着罚款或风险做一件规定之外的事。`});
+  if (ledger.blocking) out.push(...foldBlocking(ledger.blocking, revision, index).findings);
   const order = (f: LogicFinding) => { const r = index.at(f.ref); return r ? r.scene * 10_000 + r.line : 1e9; };
   return out.sort((a, b) => order(a) - order(b));
 }

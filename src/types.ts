@@ -33,8 +33,20 @@ export interface LogicLedger {
   instructions: {text: string; ref: string; reasonRef: string | null}[];
   sightings: {who: string; what: string; ref: string; visible: 'yes' | 'no' | 'unclear'; why: string}[];
   choices: {ref: string; choice: string; cost: string}[];
+  /** Where people and things are, and every action that moves them or touches a thing. Absent in checks made before blocking. */
+  blocking?: LogicBlocking;
 }
-export type LogicKind = 'offscreen_knowledge' | 'ending_unstated' | 'ending_late' | 'dead_setup' | 'unexplained_instruction' | 'unseen' | 'no_choice';
+export type Posture = 'standing' | 'sitting' | 'lying' | 'kneeling';
+export type BlockingKind = 'at' | 'move' | 'stand' | 'sit' | 'take' | 'put' | 'give' | 'use';
+/** Zones are places within reach of each other inside; things are what people take, put, give or act on.
+ * Names are in Chinese for the author; `en` is the short English phrase clip prompts use. */
+export interface LogicBlocking {
+  zones: {id: string; name: string; en: string}[];
+  things: {id: string; name: string; en: string; ref: string; zone: string | null; holder: string | null}[];
+  /** In script order. `at` places a person where the scene first shows them; every later change needs its own action. */
+  events: {ref: string; who: string; kind: BlockingKind; zone: string | null; posture: Posture | null; thing: string | null; with: string | null; to: string | null; state: string | null}[];
+}
+export type LogicKind = 'offscreen_knowledge' | 'ending_unstated' | 'ending_late' | 'dead_setup' | 'unexplained_instruction' | 'unseen' | 'no_choice' | 'out_of_reach' | 'not_holding' | 'no_move';
 /** A finding the program draws from the ledger, in plain words, with where it is and a way to fix it. */
 export interface LogicFinding { id: string; kind: LogicKind; ref: string; title: string; detail: string; fix: string }
 /** One logic check of one revision. A finding is settled by a new revision without it, or kept by the author with a reason. */

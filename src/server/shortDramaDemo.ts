@@ -97,5 +97,19 @@ export function shortDramaDemoLedger(language: 'en' | 'zh'): LogicLedger {
     instructions: [{text: en ? 'Please sing happy birthday' : '请帮我唱一首生日歌', ref: 's1:2', reasonRef: 's1:2'}],
     sightings: [{who: en ? 'MAYA' : '玛雅', what: en ? 'the message on her phone' : '手机上的消息', ref: 's3:2', visible: 'yes', why: en ? 'it is on the phone in her hand' : '消息就在她手里的手机上'}],
     choices: [{ref: 's2:6', choice: en ? 'Maya sings although singing costs extra' : '唱歌本来要加钱，玛雅还是唱了', cost: en ? 'she gives away what she said she charges for' : '她白白做了本该加钱的事'}],
+    blocking: demoBlocking(en ? 'MAYA' : '玛雅', en ? 'LEO' : '老林'),
+  };
+}
+
+/** Maya rides up with the box and her phone, steps out to Leo's door and hands him the box; both stay at the door. */
+function demoBlocking(maya: string, leo: string): NonNullable<LogicLedger['blocking']> {
+  const ev = (ref: string, who: string, kind: NonNullable<LogicLedger['blocking']>['events'][number]['kind'], extra: {zone?: string; posture?: 'standing'; thing?: string; to?: string} = {}) =>
+    ({ref, who, kind, zone: extra.zone ?? null, posture: extra.posture ?? null, thing: extra.thing ?? null, with: null, to: extra.to ?? null, state: null});
+  return {
+    zones: [{id: 'z1', name: '电梯里', en: 'in the elevator'}, {id: 'z2', name: '老林家门口', en: 'at the door of Leo\'s apartment'}],
+    things: [{id: 't1', name: '蛋糕盒', en: 'a clear box with one cupcake', ref: 's1:1', zone: null, holder: maya}, {id: 't2', name: '玛雅的手机', en: 'her phone', ref: 's1:2', zone: null, holder: maya}],
+    events: [ev('s1:1', maya, 'at', {zone: 'z1', posture: 'standing'}), ev('s1:4', maya, 'move', {zone: 'z2'}),
+      ev('s2:1', leo, 'at', {zone: 'z2', posture: 'standing'}), ev('s2:3', maya, 'at', {zone: 'z2', posture: 'standing'}), ev('s2:7', maya, 'give', {thing: 't1', to: leo}),
+      ev('s3:1', maya, 'at', {zone: 'z2', posture: 'standing'}), ev('s3:3', leo, 'at', {zone: 'z2', posture: 'standing'})],
   };
 }

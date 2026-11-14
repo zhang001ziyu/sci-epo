@@ -173,7 +173,9 @@ export function shotTexts(list: Pick<ShotList, 'shots'>, revision: Pick<Revision
 
 export const totalDuration = (list: Pick<ShotList, 'shots'>): number => round(list.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0));
 
-export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'too_short_for_content' | 'multiple_actions' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
+/** Fine contact between a hand and a flame, which video models rarely act out correctly. */
+export const HARD_ACTION = /\b(smother|snuff|pinch(?:es|ed|ing)? out|cups? (?:the|a|his|her) (?:flame|match)|(?:palm|fingers?)\b[^.]{0,30}\b(?:flame|fire)|(?:flame|fire)\b[^.]{0,30}\b(?:palm|fingers?))|捂灭|掐灭|捏灭|(?:手心|手掌|掌心|手指)[^。]{0,12}(?:火苗|火焰)|(?:火苗|火焰)[^。]{0,12}(?:手心|手掌|掌心|手指)/iu;
+export type ShotWarningKind = 'too_long' | 'too_short_for_speech' | 'too_short_for_content' | 'multiple_actions' | 'hard_action' | 'multiple_speakers' | 'label_mismatch' | 'unassigned_dialogue' | 'dialogue_misaligned' | 'total_duration' | 'missing_language' | 'adaptation_not_newest' | 'screen_text_unreadable';
 /** suggestedSeconds and splitAt are one-click fixes: the duration the content needs, and the line to split before. */
 export interface ShotWarning { kind: ShotWarningKind; message: string; shotId?: string; language?: string; suggestedSeconds?: number; splitAt?: number }
 /** readingSpeed overrides READING_SPEEDS, in characters per second. */
@@ -269,6 +271,8 @@ export function shotListWarnings(list: Pick<ShotList, 'cast' | 'shots' | 'voiceL
       const fix = need.seconds > MAX_SHOT_SECONDS ? `超过单镜 ${MAX_SHOT_SECONDS} 秒，需要拆成几个镜头。` : `可以改成 ${need.seconds} 秒${split ? '，或拆成两个镜头' : ''}。`;
       warnings.push({kind: 'too_short_for_content', shotId: shot.id, language: need.language, message: `镜头 ${shot.id} 现在 ${shot.durationSeconds} 秒，按内容大约要 ${need.seconds} 秒（${parts}）。${fix}`, ...fixes});
     }
+    const hard = need.actions.find(position => Object.values(lines.find(l => l.position === position)?.texts ?? {}).some(t => HARD_ACTION.test(t)));
+    if (hard) warnings.push({kind: 'hard_action', shotId: shot.id, message: `镜头 ${shot.id} 第 ${hard} 行要视频模型演出手和火苗的精细接触，常常演错（比如火苗在摊开的手心上烧）。建议拆成“动作”和“结果”两个镜头：先拍手合拢过去或挡住，再切到结果（手松开、火已灭、冒一缕烟）；也可以用遮挡或切到脸来交代。`});
     if (need.actions.length >= 2) warnings.push({kind: 'multiple_actions', shotId: shot.id, splitAt: need.actions[1]!, message: `镜头 ${shot.id} 里有 ${need.actions.length} 个动作（第 ${need.actions.join('、')} 行）。视频模型在一个镜头里常常只演出一个，其余的会漏掉或糊在一起。建议从第 ${need.actions[1]} 行拆开，一个镜头只放一个动作。`});
     const speakers = new Set(shot.spoken.map(s => s.castId));
     const reply = shot.spoken.find(s => s.castId !== shot.spoken[0]?.castId)?.line;
