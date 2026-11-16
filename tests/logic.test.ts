@@ -39,6 +39,9 @@ describe('ledger and findings', () => {
     expect(findings.some(f => f.title.includes('她在担心父亲'))).toBe(false);
     // Her long-standing history with her father needs no line; what happens tonight still does.
     expect(findings.some(f => f.title.includes('心脏病'))).toBe(false);
+    // A message that says how she knows is its own source; a source after the message is not.
+    const said = (sourceRef: string) => logicFindings({...ledger, offscreen: [{character: 'ANNA', messageRef: 's2:5', claims: [{fact: '他今晚要点火', sourceKind: 'told', sourceRef}]}]}, revision).filter(f => f.kind === 'offscreen_knowledge').length;
+    expect([said('s2:5'), said('s2:4'), said('s2:6')]).toEqual([0, 0, 1]);
     expect(findings.some(f => f.kind === 'dead_setup' && f.title.includes('蓝信封'))).toBe(false);
   });
 

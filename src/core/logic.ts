@@ -95,7 +95,8 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
   for (const o of ledger.offscreen) for (const c of o.claims) {
     const source = c.sourceRef ? at(c.sourceRef) : undefined, message = at(o.messageRef);
     // Her own facts, her long-standing history with the person or place, and the brief need no line in the text.
-    const missing = c.sourceKind === 'none' || (!['brief', 'self', 'history'].includes(c.sourceKind) && (!source || !index.before(source, message)));
+    // A source on the message's own line is the message saying how she knows ("he texted me ...").
+    const missing = c.sourceKind === 'none' || (!['brief', 'self', 'history'].includes(c.sourceKind) && (!source || index.before(message, source)));
     if (missing) out.push({id: `offscreen:${o.messageRef}:${quote(c.fact, 40)}`, kind: 'offscreen_knowledge', ref: o.messageRef,
       title: `${o.character} 不在场，却知道“${quote(c.fact, 60)}”`,
       detail: `${o.character} 只通过消息出现。${line(o.messageRef)} 里她知道这件事，但在这之前，正文里没有她能知道的来源：她不在现场，没人告诉她，她也看不到画面。观众会问“她怎么知道的”。`,
