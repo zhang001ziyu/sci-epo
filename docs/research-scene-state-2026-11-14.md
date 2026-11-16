@@ -35,5 +35,6 @@ Common pattern in the confirmed sources: the model extracts events with evidence
 6. **Prevention when writing.** The short-drama writing, review and whole-script revision prompts ask for visible moves before any contact, and lasting injuries or wet clothes carry forward. Blocking findings go into the coordinated revision like any other finding.
 7. **Lasting conditions.** A burn or soaked clothes is part of the state until the script ends it, so later clips show it.
 8. **Shots see the state.** The storyboard model receives each scene's opening state and the actions by line; the shot-by-shot review shows where each person is when the shot starts and which actions it must show.
+9. **Two independent passes.** Every live check fills the ledger twice; the program lists each break any pass found once, and tells the author whether both passes found it. On the revised first episode, three checks in a row gave the same result.
 
 Content was rephrased for compliance with licensing restrictions.
