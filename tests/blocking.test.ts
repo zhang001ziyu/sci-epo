@@ -84,6 +84,7 @@ describe('blocking', () => {
     expect(() => parseLedger(ledger({...broken, events: [ev('s1:1', 'LEO', 'fly' as 'at')]}), revision)).toThrow('动作类型');
     expect(() => parseLedger(ledger({...broken, events: [ev('s1:1', 'LEO', 'move')]}), revision)).toThrow('zone');
     expect(() => parseLedger(ledger({...broken, zones: [{id: 'z1', name: 'x', en: 'by <d>'}]}), revision)).toThrow('不能含有');
+    expect(parseLedger(ledger({...broken, things: things.map(t => t.id === 't2' ? {...t, zone: 'z1'} : t)}), revision).blocking!.things[1]).toMatchObject({zone: null, holder: 'LEO'});
     const {blocking: _, ...old} = ledger(broken);
     expect(parseLedger(old, revision).blocking).toBeUndefined();
   });

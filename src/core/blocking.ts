@@ -40,8 +40,9 @@ export function parseBlocking(value: unknown, ref: (v: unknown, label: string) =
   const things = list(row.things, '东西', 60).map((item, i) => {
     const t = record(item, `第 ${i + 1} 样东西`);
     if (typeof t.id !== 'string' || !/^t\d{1,3}$/u.test(t.id)) reject(`第 ${i + 1} 样东西的编号应为 t1、t2 这样的编号。`);
-    const id = t.id as string, place = zone(t.zone, `东西 ${id}`), holder = optText(t.holder, `东西 ${id} 的持有人`, 60);
-    if (place && holder) reject(`东西 ${id} 不能同时在区域里又在人手里。`);
+    const id = t.id as string, holder = optText(t.holder, `东西 ${id} 的持有人`, 60);
+    // A thing in someone's hands is with them, wherever the model also placed it.
+    const place = holder ? (zone(t.zone, `东西 ${id}`), null) : zone(t.zone, `东西 ${id}`);
     return {id, name: text(t.name, `东西 ${id} 的名字`, 60), en: text(t.en, `东西 ${id} 的英文`, 120), ref: ref(t.ref, `东西 ${id} 第一次出现`), zone: place, holder};
   });
   const thingIds = new Set(things.map(t => t.id));
