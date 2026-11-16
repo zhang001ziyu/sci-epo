@@ -1,6 +1,8 @@
 /** Model instructions for shot-list generation. Server-only, so the browser bundle carries no prompts. */
-import type { BibleContent, Revision } from '../types';
+import type { BibleContent, LogicBlocking, Revision } from '../types';
 import { sceneSetting } from './bible';
+import { blockingPeople, describeEvent, describeState, foldBlocking } from './blocking';
+import { lineIndex } from './logic';
 import { MAX_SHOT_SECONDS, aspectRatioOf, isShortDrama } from './formats';
 import { durationInstruction, studioIntro } from './formatPrompts';
 import { scriptLanguage } from './languages';
@@ -25,7 +27,17 @@ export const SETTING_GUIDANCE = 'user.setting 是作者确认过的本集设定�
 /** Only with a confirmed episode bible: the duration and one-action rules the shot tab checks. */
 export const ACTION_GUIDANCE = '每一行动作描写是一个动作。一个镜头最多放一个动作；连续几个动作时拆成几个镜头。每个动作至少留 1.5 秒；有画面文字时，再留出观众读完文字的时间。';
 
-export function buildStoryboardMessages(revision: Revision, bible?: BibleContent): {role: 'system' | 'user'; content: string}[] {
+/** Only with blocking from the logic check: shots keep where people are, how they stand and what they hold. */
+export const BLOCKING_GUIDANCE = 'user.blocking 是定稿剧本的走位：每场开始时谁在哪、什么姿势、手里拿着什么，以及哪几行有动作。composition 里人物的位置、姿势和手里的东西必须和它一致；反应镜头、特写和切回来的镜头不改变它们。一个动作行改变了位置或持物时，让这个镜头拍到这个变化，不要跳过。';
+
+/** The blocking in plain words for the storyboard model: each scene's opening state and the actions by line. */
+export function storyboardBlocking(revision: Revision, blocking: LogicBlocking) {
+  const fold = foldBlocking(blocking, revision, lineIndex(revision)), people = blockingPeople(blocking);
+  return revision.scenes.map(s => ({sceneId: s.id, start: describeState(blocking, fold.before(s.id, 1)!, people),
+    actions: blocking.events.filter(e => e.ref.startsWith(`${s.id}:`)).map(e => ({n: Number(e.ref.split(':')[1]), action: `${e.who}：${describeEvent(blocking, e)}`}))}));
+}
+
+export function buildStoryboardMessages(revision: Revision, bible?: BibleContent, blocking?: LogicBlocking): {role: 'system' | 'user'; content: string}[] {
   const brief = revision.context.brief, duration = durationInstruction(brief), shortDrama = isShortDrama(brief);
   const format = `{"cast":[{"id":"C1","name":"剧本中的人名"}],"shots":[{"id":"sh1","sceneId":"s1","firstLine":1,"lastLine":2,"size":"close_up","camera":"static","characters":["C1"],"spoken":[{"line":2,"castId":"C1"}],${shortDrama ? '"screenText":[],' : ''}"durationSeconds":4.5,"composition":"一句话写构图和人物在画面中的位置","sound":"本镜需要的环境声或音效，可省略"}]}`;
   const setting = bible ? revision.scenes.map(s => {
@@ -33,11 +45,12 @@ export function buildStoryboardMessages(revision: Revision, bible?: BibleContent
     return {sceneId: s.id, location: location ? `${location.name}: ${location.look}` : '', props: props.map(p => `${p.name}: ${p.look}`)};
   }) : undefined;
   return [
-    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${STORYBOARD_GUIDANCE}${shortDrama ? `\n${SCREEN_TEXT_GUIDANCE}` : ''}${bible ? `\n${SETTING_GUIDANCE}\n${ACTION_GUIDANCE}` : ''}${duration ? `\n${duration}` : ''}\n输出格式：${format}。只返回 cast 和 shots。`},
+    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${STORYBOARD_GUIDANCE}${shortDrama ? `\n${SCREEN_TEXT_GUIDANCE}` : ''}${bible ? `\n${SETTING_GUIDANCE}\n${ACTION_GUIDANCE}` : ''}${blocking ? `\n${BLOCKING_GUIDANCE}` : ''}${duration ? `\n${duration}` : ''}\n输出格式：${format}。只返回 cast 和 shots。`},
     {role: 'user', content: JSON.stringify({
       task: '把这一版剧本拆成镜头表。', aspectRatio: aspectRatioOf(brief), maxShotSeconds: MAX_SHOT_SECONDS,
       ...(brief.durationTarget ? {durationTarget: brief.durationTarget} : {}), characters: brief.characters,
       ...(setting ? {setting} : {}),
+      ...(blocking ? {blocking: storyboardBlocking(revision, blocking)} : {}),
       scenes: revision.scenes.map(s => ({id: s.id, heading: s.heading, lines: scriptLines(s.content).map((text, i) => ({n: i + 1, text}))})),
     })},
   ];

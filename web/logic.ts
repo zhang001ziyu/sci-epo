@@ -3,26 +3,20 @@
 import type { Episode, LogicCheck, LogicFinding, ProjectBundle, Revision } from '../src/types';
 import { latestLogicCheck, logicGate } from '../src/core/logic';
 import { scriptLines } from '../src/core/scriptLines';
+import { describeEvent } from '../src/core/blocking';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]!));
 const KIND: Record<LogicFinding['kind'], string> = {offscreen_knowledge: '场外人物知道了不该知道的事', ending_unstated: '结尾靠的东西没在正文里交代', ending_late: '结尾靠的东西最后才出现', dead_setup: '埋下的东西没用上', unexplained_instruction: '要求没有理由', unseen: '位置上看不到', no_choice: '主角没有做选择', out_of_reach: '够不着，也没走过去', not_holding: '手里没有这样东西', no_move: '位置或姿势变了，没有动作'};
-const POSTURE: Record<string, string> = {standing: '站着', sitting: '坐着', lying: '躺着', kneeling: '跪着'};
 
 /** The blocking the check read from the script, action by action, so the author can see where each person is. */
 function blockingView(check: LogicCheck, revision: Revision): string {
   const b = check.ledger.blocking;
   if (!b) return '<p class="small muted">这次检查没有记录走位（是加入走位检查之前做的）。重新检查一次，就能核对人物位置和手里的东西。</p>';
   const zone = (id: string | null) => id ? b.zones.find(z => z.id === id)?.name ?? id : '';
-  const thing = (id: string | null) => id ? b.things.find(t => t.id === id)?.name ?? id : '';
   const lines = new Map(revision.scenes.map(s => [s.id, scriptLines(s.content)]));
-  const says = (e: NonNullable<LogicCheck['ledger']['blocking']>['events'][number]) => ({
-    at: `在${zone(e.zone) || '？'}${e.posture ? `，${POSTURE[e.posture]}` : ''}`, move: `走到${zone(e.zone)}`, stand: '站起来', sit: `坐下${e.zone ? `（${zone(e.zone)}）` : ''}`,
-    take: `拿起“${thing(e.thing)}”`, put: `放下“${thing(e.thing)}”${e.zone ? `到${zone(e.zone)}` : ''}`, give: `把“${thing(e.thing)}”递给 ${e.to ?? ''}`,
-    use: `对“${thing(e.thing)}”动手${e.with ? `（用“${thing(e.with)}”）` : ''}${e.state ? ` → ${e.state}` : ''}`,
-  })[e.kind];
-  const rows = b.events.map(e => { const [scene, n] = e.ref.split(':'); return `<tr><td>${esc(e.ref)}</td><td>${esc(lines.get(scene!)?.[Number(n) - 1] ?? '')}</td><td>${esc(e.who)}</td><td>${esc(says(e))}</td></tr>`; }).join('');
+  const rows = b.events.map(e => { const [scene, n] = e.ref.split(':'); return `<tr><td>${esc(e.ref)}</td><td>${esc(lines.get(scene!)?.[Number(n) - 1] ?? '')}</td><td>${esc(e.who)}</td><td>${esc(describeEvent(b, e))}</td></tr>`; }).join('');
   const start = b.things.map(t => `${t.name}：${t.holder ? `${t.holder} 手里` : t.zone ? zone(t.zone) : '不明'}`).join('；');
-  return `<details class="logic-blocking"><summary>走位和持物（${b.events.length} 个动作）</summary><p class="small muted">程序按这张表推算每一行开始时谁在哪、站着还是坐着、手里拿着什么，再写进每个视频片段的开场。表和正文对不上时，以正文为准：改正文后重新检查。</p>`
+  return `<details class="logic-blocking"><summary>走位和持物（${b.events.length} 个动作）</summary><p class="small muted">程序按这张表推算每一行开始时谁在哪、站着还是坐着、手里拿着什么、身上有没有伤，交给分镜，再写进每个视频片段的开场。表和正文对不上时，以正文为准：改正文后重新检查。</p>`
     + `<p class="small"><span class="label">区域</span>${esc(b.zones.map(z => z.name).join('、') || '无')}</p><p class="small"><span class="label">东西一开始在哪</span>${esc(start || '无')}</p>`
     + `<table class="logic-blocking-table"><thead><tr><th>行</th><th>正文</th><th>人物</th><th>动作</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }

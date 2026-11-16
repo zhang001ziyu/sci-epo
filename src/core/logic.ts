@@ -3,7 +3,7 @@
  * protagonist something), and the program decides the findings from it. Shot lists and video need every finding of
  * the accepted revision to be fixed in a new revision or kept by the author with a reason. Browser-safe. */
 import type { Episode, LogicCheck, LogicFinding, LogicLedger, Revision } from '../types';
-import { foldBlocking, parseBlocking } from './blocking';
+import { actionRefs, foldBlocking, parseBlocking } from './blocking';
 import { scriptLines } from './scriptLines';
 
 export class LogicError extends Error {}
@@ -30,7 +30,11 @@ export function lineIndex(revision: Pick<Revision, 'scenes'>) {
 }
 
 /** One validator for the model's ledger. Every reference must name a line of this revision; null means none. */
-export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>): LogicLedger {
+export interface LedgerOptions {
+  /** A live model's answer: blocking must answer every action line (`actionRefs`), so a skipped line is caught. */
+  coverage?: boolean;
+}
+export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>, options: LedgerOptions = {}): LogicLedger {
   const row = record(value, '逻辑检查'), index = lineIndex(revision);
   const ref = (v: unknown, label: string): string => typeof v === 'string' && index.at(v) ? v : reject(`${label}的行号 ${String(v)} 不在剧本里，应写成“场景编号:行号”，例如 s1:3。`);
   const optRef = (v: unknown, label: string): string | null => v === null || v === undefined || v === '' ? null : ref(v, label);
@@ -70,15 +74,16 @@ export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>):
     return {ref: ref(x.ref, '选择的位置'), choice: text(x.choice, '选择', 200), cost: text(x.cost, '代价', 200)};
   });
   let blocking;
-  try { blocking = row.blocking === undefined || row.blocking === null ? undefined : parseBlocking(row.blocking, ref); }
+  if (options.coverage && (row.blocking === undefined || row.blocking === null)) reject('缺少走位（blocking）。');
+  try { blocking = row.blocking === undefined || row.blocking === null ? undefined : parseBlocking(row.blocking, ref, options.coverage ? actionRefs(revision) : undefined); }
   catch (error) { return reject(error instanceof Error ? error.message : '走位格式无效。'); }
   return {protagonist, offscreen, ending, setups, instructions, sightings, choices, ...(blocking ? {blocking} : {})};
 }
 
-export function parseLedgerOutput(raw: string, revision: Pick<Revision, 'scenes'>): LogicLedger {
+export function parseLedgerOutput(raw: string, revision: Pick<Revision, 'scenes'>, options: LedgerOptions = {}): LogicLedger {
   let value: unknown;
   try { value = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')); } catch { return reject('模型输出不是完整的 JSON。'); }
-  return parseLedger(value, revision);
+  return parseLedger(value, revision, options);
 }
 
 const quote = (t: string, max = 80) => { const s = t.trim(); return s.length > max ? `${s.slice(0, max - 1)}…` : s; };

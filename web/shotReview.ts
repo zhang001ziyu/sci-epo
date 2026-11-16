@@ -1,7 +1,9 @@
 /** The shot-by-shot check before rendering: what each shot shows, where, who, how long, and the exact lines,
  * in plain words, with one confirmation per shot. Pure rendering; ShotListPanel owns the state and the clicks. */
-import type { CastMember, EpisodeBible, Revision, Shot, ShotReview } from '../src/types';
+import type { CastMember, EpisodeBible, LogicBlocking, Revision, Shot, ShotReview } from '../src/types';
 import { sceneSetting } from '../src/core/bible';
+import { describeEvent, describeState, foldBlocking } from '../src/core/blocking';
+import { lineIndex } from '../src/core/logic';
 import { languageName } from '../src/core/languages';
 import { dialoguePositions, labelOnly, scriptLines } from '../src/core/scriptLines';
 import { isTooShort, screenTextLines, type ShotNeed, type ShotView, type ShotWarning } from '../src/core/shotList';
@@ -27,6 +29,8 @@ export interface ReviewInput {
   canConfirm: boolean;
   blocked?: string;
   disabled: string;
+  /** Blocking from the logic check of the list's revision: where each person is at the shot's first line. */
+  blocking?: LogicBlocking;
 }
 
 type LineKind = 'dialogue' | 'action' | 'screen' | 'label';
@@ -47,6 +51,15 @@ export function reviewView(o: ReviewInput): string {
   const done = o.views.filter(v => state(v.shot.id) === 'confirmed').length;
   const intro = `<div class="review-intro"><p><strong>开 GPU 之前，一个镜头一个镜头地看。</strong>每张卡片写着这一镜拍什么、在哪里、谁在画面里、多长，以及这一镜要念的台词。没问题就点“这一镜没问题”。全部确认后，开拍清单里的“逐镜确认”才算通过。</p><p class="small muted">发现问题就点卡片里的修改按钮，或切回“分镜表”去改。改完会存成新的分镜表版本，没改动的镜头会保留确认；新版本需要重新采用。</p><div class="review-progress"><span>已确认 <strong>${esc(done)}</strong> / ${esc(o.views.length)} 个镜头</span><progress max="${esc(o.views.length)}" value="${esc(done)}"></progress></div>${o.blocked ? `<div class="inline-warning">${esc(o.blocked)}</div>` : ''}</div>`;
   const sceneLines = new Map(o.revision.scenes.map(s => [s.id, scriptLines(s.content)])), dialogue = new Map(o.revision.scenes.map(s => [s.id, dialoguePositions(s.content)]));
+  const fold = o.blocking ? foldBlocking(o.blocking, o.revision, lineIndex(o.revision)) : undefined;
+  /** Where the people of the shot are when it starts, and the actions it must show. */
+  const blockingOf = (shot: Shot, people: string[]): string => {
+    if (!o.blocking || !fold) return '';
+    const start = fold.before(shot.sceneId, shot.firstLine), state = start ? describeState(o.blocking, start, people.map(name => ({key: name, name}))) : [];
+    const actions = o.blocking.events.filter(e => { const [scene, n] = e.ref.split(':'); return scene === shot.sceneId && Number(n) >= shot.firstLine && Number(n) <= shot.lastLine; });
+    return `<div class="review-blocking"><p class="small"><span class="label">开场</span>${state.length ? state.map(esc).join('；') : '<span class="muted">走位里没有记录这几个人的位置</span>'}</p>`
+      + (actions.length ? `<p class="small"><span class="label">本镜要拍到</span>${actions.map(e => `${esc(e.ref.split(':')[1])} 行 ${esc(e.who)} ${esc(describeEvent(o.blocking!, e))}`).join('；')}</p>` : '') + '</div>';
+  };
   const cards = o.views.map(({shot, order, lines}) => {
     const need = o.needs.get(shot.id), setting = o.bible ? sceneSetting(o.bible, shot.sceneId) : undefined, s = state(shot.id);
     const screen = new Set(screenTextLines(shot, sceneLines.get(shot.sceneId) ?? [])), spoken = new Map(shot.spoken.map(x => [x.line, x.castId]));
@@ -75,7 +88,7 @@ export function reviewView(o: ReviewInput): string {
     const button = s === 'confirmed'
       ? `<button class="button subtle small-button" data-action="shots-review-undo" data-id="${esc(shot.id)}" ${o.disabled}>撤销确认</button>`
       : `<button class="button primary small-button" data-action="shots-review-confirm" data-id="${esc(shot.id)}" ${o.canConfirm ? o.disabled : 'disabled'}>这一镜没问题</button>`;
-    return `<article class="review-card ${esc(s)}" data-shot="${esc(shot.id)}"><div class="review-card-head"><strong>第 ${esc(order)} 镜</strong><span class="small muted">${esc(shot.id)} · 场景 ${esc(shot.sceneId)} · 第 ${esc(shot.firstLine)}–${esc(shot.lastLine)} 行</span>${pill}</div>${summary}${timing}${props}<div class="review-lines">${lineRows}</div>${notes}${warningList}<div class="review-actions">${button}</div></article>`;
+    return `<article class="review-card ${esc(s)}" data-shot="${esc(shot.id)}"><div class="review-card-head"><strong>第 ${esc(order)} 镜</strong><span class="small muted">${esc(shot.id)} · 场景 ${esc(shot.sceneId)} · 第 ${esc(shot.firstLine)}–${esc(shot.lastLine)} 行</span>${pill}</div>${summary}${timing}${props}${blockingOf(shot, people)}<div class="review-lines">${lineRows}</div>${notes}${warningList}<div class="review-actions">${button}</div></article>`;
   }).join('');
   return `<section class="review-view">${intro}<div class="review-list">${cards}</div></section>`;
 }

@@ -7,7 +7,7 @@ import { languageName, scriptLanguage } from '../src/core/languages';
 import { isLineAligned } from '../src/core/scriptLines';
 import { boundAdaptations, mergeWithNext, newestAlignedAdaptations, parseShotList, sceneDifferences, shotListStatus, shotListWarnings, shotNeeds, shotTexts, splitShot, totalDuration, type ShotView, type ShotWarning } from '../src/core/shotList';
 import { confirmedBible } from '../src/core/bible';
-import { logicGate } from '../src/core/logic';
+import { latestLogicCheck, logicGate } from '../src/core/logic';
 import { BiblePanel } from './bible';
 import { fixButtons, reviewView } from './shotReview';
 
@@ -96,8 +96,9 @@ export class ShotListPanel {
       const bible = confirmedBible(episode, {id: list.sourceRevisionId}), review = bundle.shotReviews?.find(r => r.id === list.id);
       const blocked = !status.current ? '逐镜确认只对当前的制作版本做。先点“采用为制作版本”。' : !bible ? '先确认上面的“本集设定”。镜头要对照地点和道具来看。' : undefined;
       const languages = [scriptLanguage(revision), ...Object.keys(adaptations)];
+      const blocking = latestLogicCheck(bundle.logicChecks, list.sourceRevisionId)?.ledger.blocking;
       const review_ = reviewView({views, cast: content.cast, revision, languages, needs: shotNeeds(content, {revision, adaptations}), warnings,
-        ...(bible ? {bible} : {}), ...(review ? {review} : {}), canConfirm: !blocked, ...(blocked ? {blocked} : {}), disabled: disabled()});
+        ...(bible ? {bible} : {}), ...(blocking ? {blocking} : {}), ...(review ? {review} : {}), canConfirm: !blocked, ...(blocked ? {blocked} : {}), disabled: disabled()});
       return `<section class="shots-view">${bibleView}${intro}${toolbar}${review_}</section>`;
     }
     const warningBlock = warnings.length ? `<div class="inline-warning" role="status"><strong>需要留意</strong><ul>${warnings.map(w => `<li>${esc(w.message)}${fixButtons(w, disabled())}</li>`).join('')}</ul><span class="small">这些提示不会阻止保存或采用，但开拍清单会逐条列出来。带按钮的可以一键改：改动先进入草稿，点“保存为新版本”才生效。</span></div>` : '';

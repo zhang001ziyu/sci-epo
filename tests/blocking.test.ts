@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { snapshotContext } from '../src/core';
-import { foldBlocking, openingState } from '../src/core/blocking';
+import { actionRefs, describeState, foldBlocking, openingState } from '../src/core/blocking';
+import { buildLogicMessages } from '../src/core/logicPrompt';
+import { buildStoryboardMessages } from '../src/core/storyboardPrompt';
+import { createModelCaller } from '../src/server/modelAttempts';
 import { planRenderBatch, type RenderPlanInput } from '../src/core/h3';
-import { carryKept, lineIndex, logicFindings, parseLedger } from '../src/core/logic';
+import { carryKept, lineIndex, logicFindings, parseLedger, parseLedgerOutput } from '../src/core/logic';
 import { HARD_ACTION, shotListWarnings } from '../src/core/shotList';
 import { SHORT_DRAMA_DEMO, shortDramaDemoLedger, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
 import type { LogicBlocking, LogicCheck, LogicLedger, Revision, ShotList } from '../src/types';
@@ -90,6 +93,37 @@ describe('blocking', () => {
   });
 });
 
+describe('line-by-line answers and conditions', () => {
+  // The model's format: one entry per action line of the script.
+  const byLine = (blocking: LogicBlocking, drop: string[] = []) => {
+    const {events, ...rest} = blocking;
+    return {...rest, lines: actionRefs(revision).filter(r => !drop.includes(r)).map(ref => ({ref, events: events.filter(e => e.ref === ref).map(({ref: _, ...e}) => e)}))};
+  };
+  const live = (value: unknown) => parseLedgerOutput(JSON.stringify({...ledger(broken), blocking: value}), revision, {coverage: true});
+
+  test('a live answer must cover every action line; a skipped line is refused by number', () => {
+    expect(actionRefs(revision)).toEqual(['s1:1', 's1:2', 's1:3', 's1:4', 's1:5', 's2:1', 's2:2']);
+    expect(live(byLine(fixed)).blocking!.events).toEqual(fixed.events);
+    expect(() => live(byLine(fixed, ['s1:4']))).toThrow('逐行走位漏了 1 个动作行：s1:4');
+    expect(() => live(fixed)).toThrow('逐行填写 lines');
+    expect(() => parseLedgerOutput(JSON.stringify({...ledger(broken), blocking: undefined}), revision, {coverage: true})).toThrow('缺少走位');
+    // Dialogue lines are not asked for.
+    const talk: Revision = {...revision, scenes: [{...revision.scenes[0]!, content: 'Leo sits.\nLEO: Go.\nMAYA\nNo.'}, revision.scenes[1]!]};
+    expect(actionRefs(talk)).toEqual(['s1:1', 's2:1', 's2:2']);
+  });
+
+  test('a burn lasts into later scenes and clips until the script ends it', () => {
+    const burned: LogicBlocking = {...fixed, events: [...fixed.events, ev('s1:5', 'LEO', 'condition', {state: 'a burned right palm'})]};
+    const fold = foldBlocking(burned, revision, index);
+    expect(fold.before('s2', 2)!.conditions.get('LEO')).toEqual(['a burned right palm']);
+    expect(openingState(burned, fold.before('s2', 2)!, [{key: 'LEO', name: 'LEO'}]).text).toContain('LEO has a burned right palm.');
+    expect(describeState(burned, fold.before('s2', 2)!, [{key: 'LEO', name: 'LEO'}])).toEqual(['LEO：拿着红火柴盒、一根火柴（lit），a burned right palm']);
+    const healed: LogicBlocking = {...burned, events: [...burned.events, ev('s2:1', 'LEO', 'recover', {state: 'a burned right palm'})]};
+    expect(foldBlocking(healed, revision, index).before('s2', 2)!.conditions.has('LEO')).toBe(false);
+    expect(() => parseLedger(ledger({...broken, events: [ev('s1:1', 'LEO', 'condition')]}), revision)).toThrow('状况');
+  });
+});
+
 describe('clips and shots', () => {
   const demo = (): Revision => ({id: 'r1', episodeId: 'e1', parentId: null, ...structuredClone(SHORT_DRAMA_DEMO.en), language: 'en', kind: 'generated', instruction: '', mode: 'demo', createdAt: time, context: snapshotContext(brief, [])});
   const list = (): ShotList => ({...shortDramaDemoShotList('en'), id: 'v1', episodeId: 'e1', sourceRevisionId: 'r1', parentId: null, aspectRatio: '9:16', voiceLanguages: ['en'], adaptations: {}, mode: 'demo', createdAt: time});
@@ -106,6 +140,24 @@ describe('clips and shots', () => {
     // After the handover the box is Leo's; scene 3 does not place Maya, so only what she holds is stated.
     expect(clips[4]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is holding her phone.');
     expect(planRenderBatch(input()).batch.clips[0]!.prompts.en!.text).not.toContain('Continuity');
+  });
+
+  test('the logic request lists the lines to answer; the storyboard request carries the blocking', () => {
+    const user = JSON.parse(buildLogicMessages(revision)[1]!.content);
+    expect(user.blockingLines).toEqual(actionRefs(revision));
+    const [system, request] = buildStoryboardMessages(demo(), undefined, blocking);
+    expect(system!.content).toContain('反应镜头、特写和切回来的镜头不改变它们');
+    expect(JSON.parse(request!.content).blocking[1]).toEqual({sceneId: 's2', start: ['MAYA：站着，在门外走廊，拿着蛋糕盒、手机', 'LEO：站着，在门外走廊'], actions: [{n: 1, action: 'LEO：在门外走廊，站着'}, {n: 3, action: 'MAYA：在门外走廊，站着'}, {n: 7, action: 'MAYA：把“蛋糕盒”递给 LEO'}]});
+    expect(JSON.parse(buildStoryboardMessages(demo())[1]!.content).blocking).toBeUndefined();
+  });
+
+  test('a logic answer the program refuses is sent again once', async () => {
+    let calls = 0;
+    const caller = createModelCaller({mode: 'live', async complete() { calls++; return calls === 1 ? 'bad' : 'good'; }}, 'logic', () => {});
+    const { AuditValidationError } = await import('../src/server/modelAttempts');
+    const raw = await caller.complete({kind: 'logic', context: revision.context, revision, episodeTitle: 'x'}, {validate: value => { if (value === 'bad') throw new AuditValidationError(['逐行走位漏了 1 个动作行：s1:4。']); }});
+    expect(raw).toBe('good');
+    expect(caller.attempts.map(a => [a.attempt, a.status])).toEqual([[1, 'failed'], [2, 'succeeded']]);
   });
 
   test('the demo ledger keeps its clean check with blocking', () => {

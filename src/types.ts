@@ -37,7 +37,8 @@ export interface LogicLedger {
   blocking?: LogicBlocking;
 }
 export type Posture = 'standing' | 'sitting' | 'lying' | 'kneeling';
-export type BlockingKind = 'at' | 'move' | 'stand' | 'sit' | 'take' | 'put' | 'give' | 'use';
+/** `condition` gives a person a lasting change of body or clothes (a burned palm, soaked clothes); `recover` ends it. */
+export type BlockingKind = 'at' | 'move' | 'stand' | 'sit' | 'take' | 'put' | 'give' | 'use' | 'condition' | 'recover';
 /** Zones are places within reach of each other inside; things are what people take, put, give or act on.
  * Names are in Chinese for the author; `en` is the short English phrase clip prompts use. */
 export interface LogicBlocking {
@@ -152,5 +153,5 @@ export interface RenderJob { id: string; batchId: string; clipId: string; langua
 export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
 export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[]; cuts?: Cut[]; shotReviews?: ShotReview[]; logicChecks?: LogicCheck[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
-export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible' | 'logic' | 'revise'; context: ContextSnapshot; bible?: BibleContent; findings?: LogicFinding[]; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
+export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible' | 'logic' | 'revise'; context: ContextSnapshot; bible?: BibleContent; blocking?: LogicBlocking; findings?: LogicFinding[]; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

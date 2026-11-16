@@ -72,7 +72,8 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
   return saved;
  }
  function addEpisode(p:Project,title:string){const ordinal=store.all('episodes').filter(e=>e.projectId===p.id).reduce((m,e)=>Math.max(m,e.ordinal),0)+1;return store.insert('episodes',{id:id(),projectId:p.id,ordinal,title,acceptedRevisionId:null,needsReview:false,createdAt:now()});}
- async function model(e:Episode,b:Record<string,unknown>,request:ModelRequest,consume:(raw:string,mode:'live'|'demo',causality?:CausalAudit,verification?:ReviewVerification)=>{id:string}){
+ /** `validate` checks a live answer before it is kept; a refused answer is sent again once where the kind allows it. */
+ async function model(e:Episode,b:Record<string,unknown>,request:ModelRequest,consume:(raw:string,mode:'live'|'demo',causality?:CausalAudit,verification?:ReviewVerification)=>{id:string},validate?:(raw:string)=>void){
   if(b.mode!=='demo'&&b.mode!=='live')return fail(400,'请选择真实生成或示例演练。');
   const resolved=b.mode==='live'?providers.managed?.resolve(request.kind):undefined;
   const provider=resolved?.provider??providers[b.mode]??fail(503,'真实模型尚未配置；可先用示例演练流程。');
@@ -172,7 +173,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
      verificationError='因果审稿未通过结构、覆盖或引文校验；已有结果已保留，未继续五维审稿、事实整理或独立陈述审计。';
      verification=failedReviewVerification(verificationError);
     }else{
-     raw=await caller.complete(request);
+     raw=await caller.complete(request,validate&&provider.mode==='live'?{validate(value){try{validate(value);}catch(error){throw new AuditValidationError([error instanceof Error?error.message:'结果未通过校验。']);}}}:{});
      if(request.kind==='review'&&provider.mode==='live'){
       const draft=parseReview(raw,request.revision!,causality);
       if(draft.errors.length){
@@ -190,7 +191,7 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    return result;
   }catch(error){
    // Do not expose upstream response bodies, URLs, or credentials.
-   const message=error instanceof HttpError?error.message:error instanceof Error&&error.name==='ModelError'?error.message:'输出未通过校验或任务失败；原稿已保留，请查看输入后重试。';
+   const message=error instanceof HttpError?error.message:error instanceof AuditValidationError&&request.kind==='logic'?`剧本逻辑检查的结果没有通过程序核对（已自动重试一次）：${error.validationErrors[0]??''}剧本没有改动，可以重新检查。`:error instanceof Error&&error.name==='ModelError'?error.message:'输出未通过校验或任务失败；原稿已保留，请查看输入后重试。';
    // Keep the completed causal pass even if the later model request fails.
    const partial=causality&&request.revision?store.insert('reviews',{id:id(),revisionId:request.revision.id,...parseReview('{}',request.revision,causality),verification:failedReviewVerification('前序审稿未完成，尚未核实审稿解释。'),mode:provider.mode,createdAt:now()}):undefined;
    store.update('runs',{...run,status:'failed',resultId:partial?.id??null,error:message,finishedAt:now()});
@@ -390,7 +391,8 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
     scriptFirst(e);
     const voiceLanguages=project(e.projectId).voiceLanguages??[scriptLanguage(r)];
     const bible=confirmedBible(e,r);
-    return model(e,body,{kind:'storyboard',context:r.context,revision:r,episodeTitle:e.title,...(bible?{bible:{locations:bible.locations,props:bible.props,scenes:bible.scenes}}:{})},(raw,mode)=>{
+    const blocking=latestLogicCheck(store.all('logic_checks'),r.id)?.ledger.blocking;
+    return model(e,body,{kind:'storyboard',context:r.context,revision:r,episodeTitle:e.title,...(bible?{bible:{locations:bible.locations,props:bible.props,scenes:bible.scenes}}:{}),...(blocking?{blocking}:{})},(raw,mode)=>{
      let content;try{content=parseShotListOutput(raw,r);}catch(error){throw new HttpError(502,`分镜表未通过校验：${error instanceof Error?error.message:''}原稿已保留。`);}
      const adaptations=Object.fromEntries(Object.entries(newestAlignedAdaptations(r,store.all('localizations'),voiceLanguages)).map(([language,l])=>[language,l.id]));
      return store.insert('shot_lists',{...content,id:id(),episodeId:e.id,sourceRevisionId:r.id,parentId:null,aspectRatio:aspectRatioOf(r.context.brief),voiceLanguages,adaptations,mode,createdAt:now()});
@@ -398,12 +400,12 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    }
    if(action==='logic-check'){
     return model(e,body,{kind:'logic',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
-     let ledger;try{ledger=parseLedgerOutput(raw,r);}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
+     let ledger;try{ledger=parseLedgerOutput(raw,r,{coverage:mode==='live'});}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
      const findings=logicFindings(ledger,r),previous=store.all('logic_checks').filter(c=>c.revisionId===r.id&&c.mode!=='manual');
      // A reason the author gave for the same finding of this revision still holds.
      const kept=carryKept(previous,findings);
      return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
-    });
+    },raw=>{parseLedgerOutput(raw,r,{coverage:true});});
    }
    if(action==='revise'){
     // Coordinated revision of the whole script from the latest logic check's open findings; the result is a candidate.

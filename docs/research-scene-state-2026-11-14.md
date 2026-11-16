@@ -31,5 +31,9 @@ Common pattern in the confirmed sources: the model extracts events with evidence
 2. **Per-line scene state.** After the script is accepted, the program folds the ledger into a table: for each script line, each character's zone, posture and what they hold, and each prop's place and condition. Reaction lines change nothing. The author reviews it before the shot list.
 3. **Clip opening state.** Each clip prompt opens with the state at its first line, and the bible lists only the props on screen in that clip. A prop description no longer implies the prop is visible.
 4. **Hard actions.** The shot list warns when a shot asks the video model for fine hand-and-flame contact, and suggests splitting it into action and result shots.
+5. **Coverage, not trust.** The model answers the blocking line by line for every action line the program lists. A skipped line is refused and the request is sent once more, so a missing action cannot hide a missing move (the first live run skipped exactly the line that broke).
+6. **Prevention when writing.** The short-drama writing, review and whole-script revision prompts ask for visible moves before any contact, and lasting injuries or wet clothes carry forward. Blocking findings go into the coordinated revision like any other finding.
+7. **Lasting conditions.** A burn or soaked clothes is part of the state until the script ends it, so later clips show it.
+8. **Shots see the state.** The storyboard model receives each scene's opening state and the actions by line; the shot-by-shot review shows where each person is when the shot starts and which actions it must show.
 
 Content was rephrased for compliance with licensing restrictions.

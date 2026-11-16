@@ -20,7 +20,8 @@ function freeze<T>(value:T):T {
 /** One frozen provider per run; JSON syntax and audit format share one resend budget. */
 export function createModelCaller(provider:ModelProvider,kind:ModelRequest['kind'],publish:(attempts:ModelAttempt[])=>void){
  const attempts:ModelAttempt[]=[];
- const budget=provider.mode==='live'?(kind==='review'?2:kind==='rewrite'?1:0):0;
+ // The logic check resends once when the program's ledger check refuses an answer (a skipped line, a bad reference).
+ const budget=provider.mode==='live'?(kind==='review'?2:kind==='rewrite'||kind==='logic'?1:0):0;
  let extraCalls=0,callId=0;
  return {attempts,async complete(request:ModelRequest,options:{batch?:number;canRetry?:()=>boolean;validate?:(raw:string,attempt:Readonly<ModelAttempt>)=>void}={}):Promise<string>{
   // Both attempts receive the identical immutable request, never the invalid answer.
@@ -46,7 +47,7 @@ export function createModelCaller(provider:ModelProvider,kind:ModelRequest['kind
     if(auditValidationFailure&&error instanceof AuditValidationError)entry.validationErrors=[...error.validationErrors];
     let retry=false;
     if(error instanceof ModelError&&(error.code==='invalid_json'||error.code==='invalid_audit_format')){
-     const auditEligible=error.code!=='invalid_audit_format'||auditValidationFailure&&frozen.kind==='review'&&frozen.reviewPass==='verification'&&!!options.validate;
+     const auditEligible=error.code!=='invalid_audit_format'||auditValidationFailure&&!!options.validate&&(frozen.kind==='review'&&frozen.reviewPass==='verification'||frozen.kind==='logic');
      const reason=!budget||frozen.kind!==kind||!auditEligible?'not_eligible':number===2?'call_limit':extraCalls>=budget?'run_limit':options.canRetry&&!options.canRetry()?'review_stopped':undefined;
      entry.retryScheduled=!reason;
      if(reason)entry.retryStoppedReason=reason;

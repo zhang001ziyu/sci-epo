@@ -4,7 +4,7 @@
  * Browser-safe. */
 import type { BlockingKind, LogicBlocking, LogicFinding, Posture, Revision } from '../types';
 import type { LineRef } from './logic';
-import { normalizeSpeakerName, scriptLines } from './scriptLines';
+import { dialoguePositions, labelOnly, normalizeSpeakerName, scriptLines } from './scriptLines';
 
 export class BlockingError extends Error {}
 const reject = (message: string): never => { throw new BlockingError(message); };
@@ -21,13 +21,13 @@ const text = (value: unknown, label: string, max: number): string => {
   return t;
 };
 const optText = (value: unknown, label: string, max: number): string | null => value === undefined || value === null || value === '' ? null : text(value, label, max);
-const KINDS: BlockingKind[] = ['at', 'move', 'stand', 'sit', 'take', 'put', 'give', 'use'];
+const KINDS: BlockingKind[] = ['at', 'move', 'stand', 'sit', 'take', 'put', 'give', 'use', 'condition', 'recover'];
 const POSTURES: Posture[] = ['standing', 'sitting', 'lying', 'kneeling'];
 
 interface Index { at(ref: string): LineRef | undefined; text(ref: string): string }
 
 /** One validator for the model's blocking. `ref` checks a line reference of the revision. */
-export function parseBlocking(value: unknown, ref: (v: unknown, label: string) => string): LogicBlocking {
+export function parseBlocking(value: unknown, ref: (v: unknown, label: string) => string, coverage?: string[]): LogicBlocking {
   const row = record(value, '走位');
   const zones = list(row.zones, '区域', 40).map((item, i) => {
     const z = record(item, `第 ${i + 1} 个区域`);
@@ -48,24 +48,49 @@ export function parseBlocking(value: unknown, ref: (v: unknown, label: string) =
   const thingIds = new Set(things.map(t => t.id));
   if (thingIds.size !== things.length) reject('东西编号重复。');
   const thing = (v: unknown, label: string): string | null => v === undefined || v === null || v === '' ? null : typeof v === 'string' && thingIds.has(v) ? v : reject(`${label}的东西 ${String(v)} 不在东西表里。`);
-  const events = list(row.events, '动作', 300).map((item, i) => {
-    const e = record(item, `第 ${i + 1} 个动作`), kind = e.kind as BlockingKind, label = `第 ${i + 1} 个动作（${String(e.kind)}）`;
+  const event = (item: unknown, label: string, lineRef?: string) => {
+    const e = record(item, label), kind = e.kind as BlockingKind;
+    label = `${label}（${String(e.kind)}）`;
     if (!KINDS.includes(kind)) reject(`动作类型只能是 ${KINDS.join('、')}。`);
     const posture = e.posture === undefined || e.posture === null || e.posture === '' ? null : POSTURES.includes(e.posture as Posture) ? e.posture as Posture : reject(`posture 只能是 ${POSTURES.join('、')}。`);
-    const out = {ref: ref(e.ref, label), who: text(e.who, `${label}的人物`, 60), kind, zone: zone(e.zone, label), posture, thing: thing(e.thing, label), with: thing(e.with, label), to: optText(e.to, `${label}的接收人`, 60), state: optText(e.state, `${label}的状态`, 60)};
+    const out = {ref: lineRef ?? ref(e.ref, label), who: text(e.who, `${label}的人物`, 60), kind, zone: zone(e.zone, label), posture, thing: thing(e.thing, label), with: thing(e.with, label), to: optText(e.to, `${label}的接收人`, 60), state: optText(e.state, `${label}的状态`, 80)};
     if (kind === 'move' && !out.zone) reject(`${label}要写走到哪个区域（zone）。`);
     if (['take', 'put', 'give', 'use'].includes(kind) && !out.thing) reject(`${label}要写对哪样东西（thing）。`);
     if (kind === 'give' && !out.to) reject(`${label}要写递给谁（to）。`);
+    if ((kind === 'condition' || kind === 'recover') && !out.state) reject(`${label}要写人物的状况（state），例如 "a burned right palm"。`);
     return out;
-  });
+  };
+  // The model answers line by line (`lines`), so the program can tell a skipped line from a line without a change.
+  let events: LogicBlocking['events'];
+  if (row.lines !== undefined && row.lines !== null) {
+    const seen = new Set<string>();
+    events = list(row.lines, '逐行走位', 600).flatMap((item, i) => {
+      const l = record(item, `逐行走位第 ${i + 1} 项`), at = ref(l.ref, `逐行走位第 ${i + 1} 项`);
+      seen.add(at);
+      return list(l.events, `${at} 的动作`, 12).map((e, j) => event(e, `${at} 的第 ${j + 1} 个动作`, at));
+    });
+    const missing = (coverage ?? []).filter(r => !seen.has(r));
+    if (missing.length) reject(`逐行走位漏了 ${missing.length} 个动作行：${missing.slice(0, 12).join('、')}${missing.length > 12 ? '……' : ''}。user.blockingLines 里的每一行都要有一项，没有变化就写 "events": []。`);
+  } else {
+    if (coverage?.length) reject('走位需要按 user.blockingLines 逐行填写 lines。');
+    events = list(row.events, '动作', 300).map((item, i) => event(item, `第 ${i + 1} 个动作`));
+  }
   return {zones, things, events};
+}
+
+/** The lines the model must answer for: every non-blank line that is not dialogue or a speaker label. */
+export function actionRefs(revision: Pick<Revision, 'scenes'>): string[] {
+  return revision.scenes.flatMap(scene => {
+    const lines = scriptLines(scene.content), dialogue = dialoguePositions(scene.content);
+    return lines.flatMap((line, i) => dialogue.has(i + 1) || (labelOnly(line) && dialogue.has(i + 2)) ? [] : [`${scene.id}:${i + 1}`]);
+  });
 }
 
 export interface PersonState { zone: string | null; posture: Posture | null; since: string | null }
 export interface ThingState { zone: string | null; holder: string | null; state: string | null }
 /** People by normalized name, things by ID. */
-export interface SceneState { people: Map<string, PersonState>; things: Map<string, ThingState> }
-const clone = (s: SceneState): SceneState => ({people: new Map([...s.people].map(([k, v]) => [k, {...v}])), things: new Map([...s.things].map(([k, v]) => [k, {...v}]))});
+export interface SceneState { people: Map<string, PersonState>; things: Map<string, ThingState>; conditions: Map<string, string[]> }
+const clone = (s: SceneState): SceneState => ({people: new Map([...s.people].map(([k, v]) => [k, {...v}])), things: new Map([...s.things].map(([k, v]) => [k, {...v}])), conditions: new Map([...s.conditions].map(([k, v]) => [k, [...v]]))});
 const key = normalizeSpeakerName;
 const quote = (t: string, max = 80) => { const s = t.trim(); return s.length > max ? `${s.slice(0, max - 1)}…` : s; };
 const POSTURE_ZH: Record<Posture, string> = {standing: '站着', sitting: '坐着', lying: '躺着', kneeling: '跪着'};
@@ -82,7 +107,7 @@ export function foldBlocking(blocking: LogicBlocking, revision: Pick<Revision, '
   const order = (ref: string) => { const r = index.at(ref)!; return r.scene * 10_000 + r.line; };
   const events = blocking.events.map((e, i) => ({e, i})).sort((a, b) => order(a.e.ref) - order(b.e.ref) || a.i - b.i).map(x => x.e);
   for (const e of events) { if (!names.has(key(e.who))) names.set(key(e.who), e.who); if (e.to && !names.has(key(e.to))) names.set(key(e.to), e.to); }
-  const state: SceneState = {people: new Map(), things: new Map(blocking.things.map(t => [t.id, {zone: t.zone, holder: t.holder ? key(t.holder) : null, state: null}]))};
+  const state: SceneState = {people: new Map(), things: new Map(blocking.things.map(t => [t.id, {zone: t.zone, holder: t.holder ? key(t.holder) : null, state: null}])), conditions: new Map()};
   const add = (kind: LogicFinding['kind'], ref: string, subject: string, title: string, detail: string, fix: string) => {
     const id = `${kind}:${ref}:${quote(subject, 40)}`;
     if (!findings.some(f => f.id === id)) findings.push({id, kind, ref, title, detail, fix});
@@ -172,6 +197,9 @@ export function foldBlocking(blocking: LogicBlocking, revision: Pick<Revision, '
             if (e.with) notHolding(e.with, '要用');
             if (e.state) target!.state = e.state;
             break;
+          // Conditions last across scenes until the script ends them.
+          case 'condition': { const list = state.conditions.get(k) ?? []; if (!list.includes(e.state!)) list.push(e.state!); state.conditions.set(k, list); break; }
+          case 'recover': { const list = (state.conditions.get(k) ?? []).filter(c => c !== e.state); if (list.length) state.conditions.set(k, list); else state.conditions.delete(k); break; }
         }
       }
     }
@@ -196,12 +224,45 @@ export function openingState(blocking: LogicBlocking, state: SceneState, people:
     }).filter(Boolean);
     const where = p ? zoneEn(p.zone) : '';
     if (p?.zone) occupied.add(p.zone);
-    if (!p?.posture && !where && !held.length) continue;
-    const verb = p?.posture ? `is ${p.posture}` : 'is';
-    parts.push(sentence(`${name} ${verb}${where ? ` ${where}` : ''}${held.length ? `${p?.posture || where ? ',' : ''} holding ${held.join(' and ')}` : ''}`));
+    const conditions = (state.conditions.get(normalizeSpeakerName(k)) ?? []).filter(c => english(c) || (missing.push(c), false));
+    if (p?.posture || where || held.length) {
+      const verb = p?.posture ? `is ${p.posture}` : 'is';
+      parts.push(sentence(`${name} ${verb}${where ? ` ${where}` : ''}${held.length ? `${p?.posture || where ? ',' : ''} holding ${held.join(' and ')}` : ''}`));
+    }
+    if (conditions.length) parts.push(sentence(`${name} has ${conditions.join(' and ')}`));
   }
   const near = [...state.things].filter(([, s]) => !s.holder && s.zone && occupied.has(s.zone)).slice(0, 4);
   for (const [id, s] of near) { const t = things.get(id)!, where = zoneEn(s.zone); if (!english(t.en)) { missing.push(t.name); continue; } if (where) parts.push(sentence(`${capitalize(thingPhrase(t, s))} is ${where}`)); }
   return {text: parts.length ? `Continuity at the start of this clip: ${parts.join(' ')}` : '', missing: [...new Set(missing)]};
 }
 const capitalize = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+/** One action in plain Chinese, for the author. */
+export function describeEvent(blocking: LogicBlocking, e: LogicBlocking['events'][number]): string {
+  const zone = (id: string | null) => id ? blocking.zones.find(z => z.id === id)?.name ?? id : '';
+  const thing = (id: string | null) => id ? blocking.things.find(t => t.id === id)?.name ?? id : '';
+  return ({
+    at: `在${zone(e.zone) || '？'}${e.posture ? `，${POSTURE_ZH[e.posture]}` : ''}`, move: `走到${zone(e.zone)}`, stand: '站起来', sit: `坐下${e.zone ? `（${zone(e.zone)}）` : ''}`,
+    take: `拿起“${thing(e.thing)}”`, put: `放下“${thing(e.thing)}”${e.zone ? `到${zone(e.zone)}` : ''}`, give: `把“${thing(e.thing)}”递给 ${e.to ?? ''}`,
+    use: `对“${thing(e.thing)}”动手${e.with ? `（用“${thing(e.with)}”）` : ''}${e.state ? ` → ${e.state}` : ''}`,
+    condition: `身上有了：${e.state ?? ''}`, recover: `不再：${e.state ?? ''}`,
+  } as Record<BlockingKind, string>)[e.kind];
+}
+
+/** Each person's state in plain Chinese: where, posture, what they hold, lasting conditions. Unknown parts are left out. */
+export function describeState(blocking: LogicBlocking, state: SceneState, people: {key: string; name: string}[]): string[] {
+  const zone = (id: string | null) => id ? blocking.zones.find(z => z.id === id)?.name ?? id : '';
+  const thing = (id: string, s: ThingState) => `${blocking.things.find(t => t.id === id)?.name ?? id}${s.state ? `（${s.state}）` : ''}`;
+  return people.flatMap(({key: k, name}) => {
+    const p = state.people.get(normalizeSpeakerName(k)), held = [...state.things].filter(([, s]) => s.holder === normalizeSpeakerName(k)).map(([id, s]) => thing(id, s));
+    const parts = [p?.posture ? POSTURE_ZH[p.posture] : '', p?.zone ? `在${zone(p.zone)}` : '', held.length ? `拿着${held.join('、')}` : '', ...(state.conditions.get(normalizeSpeakerName(k)) ?? [])].filter(Boolean);
+    return parts.length ? [`${name}：${parts.join('，')}`] : [];
+  });
+}
+
+/** Everyone the blocking names, in order of first mention: the actors of events and the holders of things. */
+export function blockingPeople(blocking: LogicBlocking): {key: string; name: string}[] {
+  const out = new Map<string, string>();
+  for (const name of [...blocking.events.flatMap(e => [e.who, ...(e.to ? [e.to] : [])]), ...blocking.things.flatMap(t => t.holder ? [t.holder] : [])]) if (!out.has(key(name))) out.set(key(name), name);
+  return [...out].map(([k, name]) => ({key: k, name}));
+}
