@@ -49,9 +49,13 @@ export interface LogicBlocking {
 }
 export type LogicKind = 'offscreen_knowledge' | 'ending_unstated' | 'ending_late' | 'dead_setup' | 'unexplained_instruction' | 'unseen' | 'no_choice' | 'out_of_reach' | 'not_holding' | 'no_move';
 /** A finding the program draws from the ledger, in plain words, with where it is and a way to fix it. */
-export interface LogicFinding { id: string; kind: LogicKind; ref: string; title: string; detail: string; fix: string }
+export interface LogicFinding { id: string; kind: LogicKind; ref: string; title: string; detail: string; fix: string;
+  /** How many of the check's independent passes found this break; absent for a single-pass check. */
+  seen?: number }
 /** One logic check of one revision. A finding is settled by a new revision without it, or kept by the author with a reason. */
-export interface LogicCheck { id: string; revisionId: string; episodeId: string; mode: ProviderMode; ledger: LogicLedger; findings: LogicFinding[]; kept?: Record<string, {reason: string; at: string}>; createdAt: string }
+export interface LogicCheck { id: string; revisionId: string; episodeId: string; mode: ProviderMode; ledger: LogicLedger; findings: LogicFinding[]; kept?: Record<string, {reason: string; at: string}>; createdAt: string;
+  /** Independent passes merged into this check (two for a live check); absent for one. */
+  passes?: number }
 /** The author's shot-by-shot check of one shot list, keyed by the shot list ID.
  * Each confirmation records the bible confirmation it saw, so a changed bible asks for a new check. */
 export interface ShotReview { id: string; episodeId: string; shots: Record<string, {at: string; bible: string | null}> }

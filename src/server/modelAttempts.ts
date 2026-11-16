@@ -21,7 +21,8 @@ function freeze<T>(value:T):T {
 export function createModelCaller(provider:ModelProvider,kind:ModelRequest['kind'],publish:(attempts:ModelAttempt[])=>void){
  const attempts:ModelAttempt[]=[];
  // The logic check resends once when the program's ledger check refuses an answer (a skipped line, a bad reference).
- const budget=provider.mode==='live'?(kind==='review'?2:kind==='rewrite'||kind==='logic'?1:0):0;
+ // The logic check makes two independent passes; each may be resent once.
+ const budget=provider.mode==='live'?(kind==='review'||kind==='logic'?2:kind==='rewrite'?1:0):0;
  let extraCalls=0,callId=0;
  return {attempts,async complete(request:ModelRequest,options:{batch?:number;canRetry?:()=>boolean;validate?:(raw:string,attempt:Readonly<ModelAttempt>)=>void}={}):Promise<string>{
   // Both attempts receive the identical immutable request, never the invalid answer.

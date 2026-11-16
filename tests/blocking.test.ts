@@ -5,7 +5,7 @@ import { buildLogicMessages } from '../src/core/logicPrompt';
 import { buildStoryboardMessages } from '../src/core/storyboardPrompt';
 import { createModelCaller } from '../src/server/modelAttempts';
 import { planRenderBatch, type RenderPlanInput } from '../src/core/h3';
-import { carryKept, lineIndex, logicFindings, parseLedger, parseLedgerOutput } from '../src/core/logic';
+import { carryKept, lineIndex, logicFindings, mergePasses, parseLedger, parseLedgerOutput } from '../src/core/logic';
 import { HARD_ACTION, shotListWarnings } from '../src/core/shotList';
 import { SHORT_DRAMA_DEMO, shortDramaDemoLedger, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
 import type { LogicBlocking, LogicCheck, LogicLedger, Revision, ShotList } from '../src/types';
@@ -179,5 +179,47 @@ describe('clips and shots', () => {
     // The wording of the rendered episode, and ordinary hand actions that are not flagged.
     for (const line of ['Maya lunges across the counter and claps her bare palm over the burning match.', '玛雅用手掌死死捂住燃烧的火柴。']) expect(HARD_ACTION.test(line)).toBe(true);
     for (const line of ['Leo lowers the flame straight toward the blue envelope.', 'She taps her cracked phone screen.', 'A bright flame flares up between his trembling fingers.']) expect(HARD_ACTION.test(line)).toBe(false);
+  });
+});
+
+describe('two independent passes', () => {
+  test('every break any pass found is listed once, with how many passes found it', () => {
+    const a = ledger(broken), b: LogicLedger = {...ledger(fixed), instructions: [{text: '不许报警', ref: 's1:2', reasonRef: null}]};
+    const {ledger: kept, findings} = mergePasses([a, b], revision);
+    expect(kept).toBe(a);
+    expect(findings.map(f => [f.kind, f.ref, f.seen])).toEqual([['unexplained_instruction', 's1:2', 1], ['out_of_reach', 's1:4', 1]]);
+    expect(mergePasses([a, a], revision).findings.map(f => f.seen)).toEqual([2]);
+    expect(mergePasses([a], revision).findings[0]!.seen).toBeUndefined();
+  });
+
+  test('a live check runs two passes and stores both counts; one valid pass is enough', async () => {
+    const { createApp } = await import('../src/server/app');
+    const { demoProvider } = await import('../src/server/demo');
+    const { Store } = await import('../src/server/store');
+    const store = new Store();
+    try {
+      let calls = 0, mode: 'two' | 'one' = 'two';
+      const answer = (r: Revision, extra: Partial<LogicLedger>) => {
+        const base = shortDramaDemoLedger('en'), {events, ...rest} = base.blocking!;
+        return JSON.stringify({...base, ...extra, blocking: {...rest, lines: actionRefs(r).map(ref => ({ref, events: events.filter(e => e.ref === ref).map(({ref: _, ...e}) => e)}))}});
+      };
+      let rev: Revision | undefined;
+      const live = {mode: 'live' as const, async complete() { calls++; if (mode === 'one' && calls > 1) return 'not json'; return answer(rev!, calls % 2 ? {} : {choices: []}); }};
+      const app = createApp(store, {demo: demoProvider, live}, process.cwd());
+      const call = async (path: string, body?: unknown) => { const r = await app(new Request('http://127.0.0.1:4317' + path, {method: body === undefined ? 'GET' : 'POST', ...(body !== undefined ? {headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {})})); return {status: r.status, body: await r.json() as any}; };
+      const p = (await call('/api/projects', {...brief, characters: 'MAYA, LEO', format: 'vertical_short_drama'})).body, e = p.episodes[0]!;
+      rev = (await call(`/api/episodes/${e.id}/generate`, {mode: 'demo'})).body as Revision;
+      const two = await call(`/api/revisions/${rev.id}/logic-check`, {mode: 'live'});
+      expect(two.status).toBe(200);
+      expect(calls).toBe(2);
+      expect(two.body.passes).toBe(2);
+      expect(two.body.findings.map((f: {kind: string; seen: number}) => [f.kind, f.seen])).toEqual([['no_choice', 1]]);
+      // One pass that fails twice leaves the other pass's answer.
+      mode = 'one'; calls = 0;
+      const one = await call(`/api/revisions/${rev.id}/logic-check`, {mode: 'live'});
+      expect(one.status).toBe(200);
+      expect(one.body.passes).toBeUndefined();
+      expect(calls).toBe(3);
+    } finally { store.close(); }
   });
 });

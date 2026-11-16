@@ -135,6 +135,22 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
   return out.sort((a, b) => order(a) - order(b));
 }
 
+/** Findings of independent passes over the same script, merged by kind and line: every break any pass found, once,
+ * with `seen` saying how many passes found it. The first pass's wording and ledger are kept. */
+export function mergePasses(ledgers: LogicLedger[], revision: Pick<Revision, 'scenes'>): {ledger: LogicLedger; findings: LogicFinding[]} {
+  const per = ledgers.map(l => logicFindings(l, revision)), slot = (f: LogicFinding) => `${f.kind}@${f.ref}`;
+  if (per.length < 2) return {ledger: ledgers[0]!, findings: per[0] ?? []};
+  const seen = (f: LogicFinding) => per.filter(list => list.some(g => slot(g) === slot(f))).length;
+  const out: LogicFinding[] = [], taken = new Set<string>();
+  // A later pass adds only the lines and kinds no earlier pass reported, so one break is listed once.
+  for (const list of per) {
+    for (const f of list) if (!taken.has(slot(f))) out.push({...f, seen: seen(f)});
+    for (const f of list) taken.add(slot(f));
+  }
+  const index = lineIndex(revision), order = (f: LogicFinding) => { const r = index.at(f.ref); return r ? r.scene * 10_000 + r.line : 1e9; };
+  return {ledger: ledgers[0]!, findings: out.sort((a, b) => order(a) - order(b))};
+}
+
 /** Reasons the author gave in the previous check of the same revision, for the findings that are still there. A finding
  * keeps its reason by ID, or, since the model words a fact differently each run, by the same kind and line when exactly
  * one old and one new finding share them. */

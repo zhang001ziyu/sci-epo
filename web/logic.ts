@@ -30,7 +30,7 @@ export function logicView(o: {bundle: ProjectBundle; revision: Revision; episode
   const gate = logicGate(episode, bundle.logicChecks);
   const disabled = (c = false) => o.busy || c ? 'disabled' : '';
   const run = `<button class="button ${check ? 'subtle' : 'primary'}" data-action="logic-run" ${disabled(!o.live || o.dirty)}>${check ? '重新检查这一版' : '检查这一版的剧本逻辑'}</button>`;
-  const intro = '<p class="small muted">拍视频之前，先把剧本的逻辑捋顺。这一步逐条核对：场外人物知道的事有没有来源；结尾靠的道具和人物关系有没有提前交代；埋下的东西有没有用上；不合常理的要求有没有理由；人物在那个位置看不看得到；对东西动手时够不够得着、有没有走过去、手里有没有那样东西；主角有没有做过要付代价的选择。每一条要么改稿解决，要么写明为什么保留。全部处理完，分镜和视频才能开始。</p>';
+  const intro = '<p class="small muted">拍视频之前，先把剧本的逻辑捋顺。每次检查让模型独立核对两遍，任何一遍查出的问题都会列出来。这一步逐条核对：场外人物知道的事有没有来源；结尾靠的道具和人物关系有没有提前交代；埋下的东西有没有用上；不合常理的要求有没有理由；人物在那个位置看不看得到；对东西动手时够不够得着、有没有走过去、手里有没有那样东西；主角有没有做过要付代价的选择。每一条要么改稿解决，要么写明为什么保留。全部处理完，分镜和视频才能开始。</p>';
   const state = !accepted ? '<p class="small">这一版还不是本集的定稿。可以先检查，改好后在剧本页采用；分镜和视频只认已采用的定稿。</p>'
     : gate.passed ? `<div class="inline-success" role="status">剧本逻辑已经捋顺${gate.check.findings.length ? `：${gate.check.findings.length} 个问题都写明了保留的理由` : '，没有发现断开的地方'}。可以去做分镜了。</div>`
     : `<div class="inline-warning" role="status">${esc(gate.message)}</div>`;
@@ -50,7 +50,8 @@ function findingView(check: LogicCheck, f: LogicFinding, disabled: string): stri
     : `<div class="language-toolbar"><button class="button small-button" data-action="logic-use" data-id="${id}" data-scene="${esc(f.ref.split(':')[0])}" ${disabled}>带入改稿</button>`
       + `<label class="sr-only" for="logic-reason-${id}">保留的理由</label><input id="logic-reason-${id}" data-logic-reason="${id}" maxlength="300" placeholder="不改的话，写一句为什么保留" value="${esc(keepDrafts.get(f.id) ?? '')}" ${disabled}/>`
       + `<button class="button subtle small-button" data-action="logic-keep" data-check="${esc(check.id)}" data-id="${id}" ${disabled}>保留</button></div>`;
-  return `<li class="logic-finding ${kept ? 'kept' : ''}"><span class="pill ${kept ? '' : 'changed'}">${esc(KIND[f.kind])}</span><strong>${esc(f.title)}</strong><p>${esc(f.detail)}</p><p class="small"><span class="label">怎么改</span>${esc(f.fix)}</p>${actions}</li>`;
+  const agreement = (check.passes ?? 1) < 2 || !f.seen ? '' : f.seen >= check.passes! ? '<span class="small muted">两次独立检查都查出</span>' : '<span class="small">只有一次检查查出：可能是漏看，也可能是误报，请对照原文判断</span>';
+  return `<li class="logic-finding ${kept ? 'kept' : ''}"><span class="pill ${kept ? '' : 'changed'}">${esc(KIND[f.kind])}</span>${agreement}<strong>${esc(f.title)}</strong><p>${esc(f.detail)}</p><p class="small"><span class="label">怎么改</span>${esc(f.fix)}</p>${actions}</li>`;
 }
 
 /** The rewrite instruction a finding sends to the rewrite box. */

@@ -20,7 +20,7 @@ import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
-import { carryKept, latestLogicCheck, lineIndex, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
+import { carryKept, latestLogicCheck, lineIndex, logicFindings, logicGate, mergePasses, parseLedgerOutput } from '../core/logic';
 import { parseRevisePlan } from '../core/revisePrompt';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
@@ -173,7 +173,14 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
      verificationError='因果审稿未通过结构、覆盖或引文校验；已有结果已保留，未继续五维审稿、事实整理或独立陈述审计。';
      verification=failedReviewVerification(verificationError);
     }else{
-     raw=await caller.complete(request,validate&&provider.mode==='live'?{validate(value){try{validate(value);}catch(error){throw new AuditValidationError([error instanceof Error?error.message:'结果未通过校验。']);}}}:{});
+     const options=validate&&provider.mode==='live'?{validate(value:string){try{validate(value);}catch(error){throw new AuditValidationError([error instanceof Error?error.message:'结果未通过校验。']);}}}:{};
+     if(request.kind==='logic'&&provider.mode==='live'){
+      // Two independent ledgers of the same script, so a break one pass misses is still found; one valid pass is enough.
+      const settled=await Promise.allSettled([1,2].map(batch=>caller.complete(request,{...options,batch})));
+      const passes=settled.flatMap(s=>s.status==='fulfilled'?[s.value]:[]);
+      if(!passes.length)throw (settled[0] as PromiseRejectedResult).reason;
+      raw=JSON.stringify({passes});
+     }else raw=await caller.complete(request,options);
      if(request.kind==='review'&&provider.mode==='live'){
       const draft=parseReview(raw,request.revision!,causality);
       if(draft.errors.length){
@@ -400,14 +407,15 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    }
    if(action==='logic-check'){
     return model(e,body,{kind:'logic',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
-     let ledger;try{ledger=parseLedgerOutput(raw,r,{coverage:mode==='live'});}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
+     let ledgers;try{const value=JSON.parse(raw) as {passes?:unknown};ledgers=Array.isArray(value?.passes)?value.passes.map(p=>parseLedgerOutput(String(p),r,{coverage:true})):[parseLedgerOutput(raw,r,{coverage:mode==='live'})];}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
+     const {ledger,findings:merged}=mergePasses(ledgers,r);
      // A reason the author gave still holds for the same finding on the same, unchanged line: in this revision or in
      // the revisions it came from, so a revision never asks to fix again what the author chose to keep.
      const lineage:Revision[]=[];for(let x:Revision|undefined=r;x&&lineage.length<20;x=x.parentId?store.get('revisions',x.parentId):undefined)lineage.push(x);
      const ids=new Set(lineage.map(x=>x.id)),texts=new Map(lineage.map(x=>[x.id,lineIndex(x)]));
-     const findings=logicFindings(ledger,r),previous=store.all('logic_checks').filter(c=>ids.has(c.revisionId)&&c.mode!=='manual');
+     const findings=merged,previous=store.all('logic_checks').filter(c=>ids.has(c.revisionId)&&c.mode!=='manual');
      const kept=carryKept(previous,findings,{revisionId:r.id,text:(rid,ref)=>texts.get(rid)?.text(ref)??''});
-     return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
+     return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(ledgers.length>1?{passes:ledgers.length}:{}),...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
     },raw=>{parseLedgerOutput(raw,r,{coverage:true});});
    }
    if(action==='revise'){
