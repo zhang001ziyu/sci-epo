@@ -17,7 +17,7 @@ const revision: Revision = {id: 'r1', episodeId: 'e1', parentId: null, title: 'L
     {id: 's2', heading: 'INT. LEO\'S APARTMENT', locked: false, content: 'Leo sits in the dark.\nLEO: Get out.\nMaya glances toward the kitchen.\nA blue envelope is taped behind the fridge coil.\nA text from Anna: "Don\'t let him light the match."\nLeo grips a box of matches.'},
   ]};
 const ledger: LogicLedger = {protagonist: 'MAYA',
-  offscreen: [{character: 'ANNA', messageRef: 's2:5', claims: [{fact: '老林此刻要点火柴', sourceKind: 'none', sourceRef: null}, {fact: '她在担心父亲', sourceKind: 'self', sourceRef: null}]}],
+  offscreen: [{character: 'ANNA', messageRef: 's2:5', claims: [{fact: '老林此刻要点火柴', sourceKind: 'none', sourceRef: null}, {fact: '她在担心父亲', sourceKind: 'self', sourceRef: null}, {fact: '父亲多年的心脏病', sourceKind: 'history', sourceRef: null}]}],
   ending: {ref: 's2:6', question: '老林会不会点火？', dependsOn: [{thing: '火柴', kind: 'prop', firstRef: 's2:6'}, {thing: '安娜是老林的女儿', kind: 'relationship', firstRef: null}, {thing: '蓝信封', kind: 'prop', firstRef: 's2:4'}]},
   setups: [{thing: '弯钥匙', ref: 's1:3', payoffRef: null, bearsOnEnding: false}, {thing: '蓝信封', ref: 's2:4', payoffRef: null, bearsOnEnding: true}],
   instructions: [{text: '不许叫 911', ref: 's1:2', reasonRef: null}],
@@ -37,6 +37,8 @@ describe('ledger and findings', () => {
     expect(knows.detail).toContain('Don\'t let him light the match');
     // A fact about the sender herself needs no source; the envelope bears on the ending, so it is not a dead setup.
     expect(findings.some(f => f.title.includes('她在担心父亲'))).toBe(false);
+    // Her long-standing history with her father needs no line; what happens tonight still does.
+    expect(findings.some(f => f.title.includes('心脏病'))).toBe(false);
     expect(findings.some(f => f.kind === 'dead_setup' && f.title.includes('蓝信封'))).toBe(false);
   });
 

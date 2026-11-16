@@ -27,7 +27,7 @@ export interface EpisodeBible extends BibleContent { revisionId: string; mode: P
 export interface LogicLedger {
   protagonist: string;
   /** Characters who appear only through messages, calls or notes, and what each message shows they know. */
-  offscreen: {character: string; messageRef: string; claims: {fact: string; sourceKind: 'self' | 'present' | 'told' | 'sees' | 'earlier' | 'brief' | 'none'; sourceRef: string | null}[]}[];
+  offscreen: {character: string; messageRef: string; claims: {fact: string; sourceKind: 'self' | 'history' | 'present' | 'told' | 'sees' | 'earlier' | 'brief' | 'none'; sourceRef: string | null}[]}[];
   ending: {ref: string; question: string; dependsOn: {thing: string; kind: 'prop' | 'rule' | 'relationship' | 'fact'; firstRef: string | null}[]};
   setups: {thing: string; ref: string; payoffRef: string | null; bearsOnEnding: boolean}[];
   instructions: {text: string; ref: string; reasonRef: string | null}[];
