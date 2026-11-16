@@ -20,7 +20,7 @@ import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
-import { carryKept, latestLogicCheck, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
+import { carryKept, latestLogicCheck, lineIndex, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
 import { parseRevisePlan } from '../core/revisePrompt';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
@@ -401,9 +401,12 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    if(action==='logic-check'){
     return model(e,body,{kind:'logic',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
      let ledger;try{ledger=parseLedgerOutput(raw,r,{coverage:mode==='live'});}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
-     const findings=logicFindings(ledger,r),previous=store.all('logic_checks').filter(c=>c.revisionId===r.id&&c.mode!=='manual');
-     // A reason the author gave for the same finding of this revision still holds.
-     const kept=carryKept(previous,findings);
+     // A reason the author gave still holds for the same finding on the same, unchanged line: in this revision or in
+     // the revisions it came from, so a revision never asks to fix again what the author chose to keep.
+     const lineage:Revision[]=[];for(let x:Revision|undefined=r;x&&lineage.length<20;x=x.parentId?store.get('revisions',x.parentId):undefined)lineage.push(x);
+     const ids=new Set(lineage.map(x=>x.id)),texts=new Map(lineage.map(x=>[x.id,lineIndex(x)]));
+     const findings=logicFindings(ledger,r),previous=store.all('logic_checks').filter(c=>ids.has(c.revisionId)&&c.mode!=='manual');
+     const kept=carryKept(previous,findings,{revisionId:r.id,text:(rid,ref)=>texts.get(rid)?.text(ref)??''});
      return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
     },raw=>{parseLedgerOutput(raw,r,{coverage:true});});
    }

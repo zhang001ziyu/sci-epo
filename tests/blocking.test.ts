@@ -79,6 +79,12 @@ describe('blocking', () => {
     expect(carryKept([lost, oldest], [f('offscreen:s1:3:心脏病和警笛'), f('b', 's1:4')])).toEqual({'offscreen:s1:3:心脏病和警笛': {reason: '订单里写明她是女儿', at: time}});
     // Two new findings on the same line cannot tell which one the reason was for.
     expect(carryKept([oldest], [f('x'), f('y')])).toEqual({});
+    // Across revisions the reason follows the line's words: a line that moved keeps it, a rewritten line does not.
+    const parentLines: Record<string, string> = {'s1:3': 'Text: "He texted me he is burning it."', 's1:4': 'Leo sits.'};
+    const childLines: Record<string, string> = {'s1:5': 'Text: "He texted me he is burning it."', 's1:3': 'Text: "Burn it."'};
+    const lines = {revisionId: 'r2', text: (rid: string, ref: string) => (rid === 'r1' ? parentLines : childLines)[ref] ?? ''};
+    expect(carryKept([oldest], [f('offscreen:s1:5:他发短信', 's1:5')], lines)).toEqual({'offscreen:s1:5:他发短信': {reason: '订单里写明她是女儿', at: time}});
+    expect(carryKept([oldest], [f('offscreen:s1:3:她知道他心脏不好', 's1:3')], lines)).toEqual({});
   });
 
   test('the parser refuses unknown zones, things and kinds; older ledgers without blocking still parse', () => {

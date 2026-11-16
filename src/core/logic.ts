@@ -138,17 +138,20 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
 /** Reasons the author gave in the previous check of the same revision, for the findings that are still there. A finding
  * keeps its reason by ID, or, since the model words a fact differently each run, by the same kind and line when exactly
  * one old and one new finding share them. */
-export function carryKept(previous: LogicCheck[], findings: LogicFinding[]): Record<string, {reason: string; at: string}> {
+export function carryKept(previous: LogicCheck[], findings: LogicFinding[], lines?: {revisionId: string; text(revisionId: string, ref: string): string}): Record<string, {reason: string; at: string}> {
   const kept: Record<string, {reason: string; at: string}> = {};
-  const slot = (f: Pick<LogicFinding, 'kind' | 'ref'>) => `${f.kind}@${f.ref}`;
-  const count = (list: LogicFinding[]) => list.reduce((m, f) => m.set(slot(f), (m.get(slot(f)) ?? 0) + 1), new Map<string, number>());
-  const newCount = count(findings);
+  // A finding's place is its line: by reference within the revision, by the line's words across revisions, so a
+  // reason follows the unchanged line of a parent revision and never a line whose words changed.
+  const slot = (revisionId: string, f: Pick<LogicFinding, 'kind' | 'ref'>) => lines ? `${f.kind}@${lines.text(revisionId, f.ref).trim()}` : `${f.kind}@${f.ref}`;
+  const count = (revisionId: string, list: LogicFinding[]) => list.reduce((m, f) => m.set(slot(revisionId, f), (m.get(slot(revisionId, f)) ?? 0) + 1), new Map<string, number>());
+  const target = lines?.revisionId ?? '', newCount = count(target, findings);
   // Newest check first, so the latest reason wins; a reason from an older check fills a finding a newer one lost.
   for (const check of [...previous].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
-    const oldCount = count(check.findings);
+    const oldCount = count(check.revisionId, check.findings), same = !lines || check.revisionId === lines.revisionId;
     for (const [fid, reason] of Object.entries(check.kept ?? {})) {
-      const old = check.findings.find(f => f.id === fid);
-      const match = findings.find(f => f.id === fid) ?? (old && oldCount.get(slot(old)) === 1 && newCount.get(slot(old)) === 1 ? findings.find(f => slot(f) === slot(old)) : undefined);
+      const old = check.findings.find(f => f.id === fid), at = old && slot(check.revisionId, old);
+      const match = (same ? findings.find(f => f.id === fid) : undefined)
+        ?? (old && !at!.endsWith('@') && oldCount.get(at!) === 1 && newCount.get(at!) === 1 ? findings.find(f => slot(target, f) === at) : undefined);
       if (match && !kept[match.id]) kept[match.id] = reason;
     }
   }
