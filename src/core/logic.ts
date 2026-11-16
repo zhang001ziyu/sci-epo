@@ -129,6 +129,26 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
   return out.sort((a, b) => order(a) - order(b));
 }
 
+/** Reasons the author gave in the previous check of the same revision, for the findings that are still there. A finding
+ * keeps its reason by ID, or, since the model words a fact differently each run, by the same kind and line when exactly
+ * one old and one new finding share them. */
+export function carryKept(previous: LogicCheck[], findings: LogicFinding[]): Record<string, {reason: string; at: string}> {
+  const kept: Record<string, {reason: string; at: string}> = {};
+  const slot = (f: Pick<LogicFinding, 'kind' | 'ref'>) => `${f.kind}@${f.ref}`;
+  const count = (list: LogicFinding[]) => list.reduce((m, f) => m.set(slot(f), (m.get(slot(f)) ?? 0) + 1), new Map<string, number>());
+  const newCount = count(findings);
+  // Newest check first, so the latest reason wins; a reason from an older check fills a finding a newer one lost.
+  for (const check of [...previous].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+    const oldCount = count(check.findings);
+    for (const [fid, reason] of Object.entries(check.kept ?? {})) {
+      const old = check.findings.find(f => f.id === fid);
+      const match = findings.find(f => f.id === fid) ?? (old && oldCount.get(slot(old)) === 1 && newCount.get(slot(old)) === 1 ? findings.find(f => slot(f) === slot(old)) : undefined);
+      if (match && !kept[match.id]) kept[match.id] = reason;
+    }
+  }
+  return kept;
+}
+
 /** The latest valid check of this revision. */
 export const latestLogicCheck = (checks: LogicCheck[] | undefined, revisionId: string): LogicCheck | undefined =>
   // Demo checks come only from the prepared ledger of the unmodified example, so they count like live ones.

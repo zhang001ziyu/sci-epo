@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { snapshotContext } from '../src/core';
 import { foldBlocking, openingState } from '../src/core/blocking';
 import { planRenderBatch, type RenderPlanInput } from '../src/core/h3';
-import { lineIndex, logicFindings, parseLedger } from '../src/core/logic';
+import { carryKept, lineIndex, logicFindings, parseLedger } from '../src/core/logic';
 import { HARD_ACTION, shotListWarnings } from '../src/core/shotList';
 import { SHORT_DRAMA_DEMO, shortDramaDemoLedger, shortDramaDemoShotList } from '../src/server/shortDramaDemo';
-import type { LogicBlocking, LogicLedger, Revision, ShotList } from '../src/types';
+import type { LogicBlocking, LogicCheck, LogicLedger, Revision, ShotList } from '../src/types';
 
 const time = '2026-11-14T08:00:00.000Z';
 const brief = {title: 'Last Order', premise: 'A rider.', characters: 'MAYA, LEO', worldRules: 'City.', authorRules: 'Reveal.', language: 'en', format: 'vertical_short_drama' as const};
@@ -67,6 +67,15 @@ describe('blocking', () => {
     const findings = logicFindings(ledger(lighter), revision);
     expect(findings.map(f => [f.kind, f.ref])).toEqual([['not_holding', 's1:4']]);
     expect(findings[0]!.detail).toContain('放在客厅扶手椅');
+  });
+
+  test('a kept reason survives a rerun that words the finding differently, and a rerun that lost it', () => {
+    const f = (id: string, ref = 's1:3') => ({id, kind: 'offscreen_knowledge' as const, ref, title: id, detail: '', fix: ''});
+    const oldest: LogicCheck = {id: 'c1', revisionId: 'r1', episodeId: 'e1', mode: 'live', ledger: ledger(fixed), findings: [f('offscreen:s1:3:她知道他心脏不好'), f('a', 's1:4')], kept: {'offscreen:s1:3:她知道他心脏不好': {reason: '订单里写明她是女儿', at: time}}, createdAt: '2026-11-13T00:00:00.000Z'};
+    const lost: LogicCheck = {...oldest, id: 'c2', findings: [f('offscreen:s1:3:父亲有心脏病')], kept: undefined, createdAt: '2026-11-14T00:00:00.000Z'};
+    expect(carryKept([lost, oldest], [f('offscreen:s1:3:心脏病和警笛'), f('b', 's1:4')])).toEqual({'offscreen:s1:3:心脏病和警笛': {reason: '订单里写明她是女儿', at: time}});
+    // Two new findings on the same line cannot tell which one the reason was for.
+    expect(carryKept([oldest], [f('x'), f('y')])).toEqual({});
   });
 
   test('the parser refuses unknown zones, things and kinds; older ledgers without blocking still parse', () => {

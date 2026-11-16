@@ -20,7 +20,7 @@ import { AuditValidationError, createModelCaller } from './modelAttempts';
 import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortDrama, parseDurationTarget, parseFormat, parseVoiceLanguages } from '../core/formats';
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
-import { latestLogicCheck, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
+import { carryKept, latestLogicCheck, logicFindings, logicGate, parseLedgerOutput } from '../core/logic';
 import { parseRevisePlan } from '../core/revisePrompt';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
@@ -399,9 +399,9 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
    if(action==='logic-check'){
     return model(e,body,{kind:'logic',context:r.context,revision:r,episodeTitle:e.title},(raw,mode)=>{
      let ledger;try{ledger=parseLedgerOutput(raw,r);}catch(error){throw new HttpError(502,`剧本逻辑检查的结果未通过校验：${error instanceof Error?error.message:''}剧本没有改动。`);}
-     const findings=logicFindings(ledger,r),previous=latestLogicCheck(store.all('logic_checks'),r.id);
+     const findings=logicFindings(ledger,r),previous=store.all('logic_checks').filter(c=>c.revisionId===r.id&&c.mode!=='manual');
      // A reason the author gave for the same finding of this revision still holds.
-     const kept=Object.fromEntries(Object.entries(previous?.kept??{}).filter(([fid])=>findings.some(f=>f.id===fid)));
+     const kept=carryKept(previous,findings);
      return store.insert('logic_checks',{id:id(),revisionId:r.id,episodeId:e.id,mode,ledger,findings,...(Object.keys(kept).length?{kept}:{}),createdAt:now()});
     });
    }
