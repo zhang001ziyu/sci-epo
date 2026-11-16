@@ -215,7 +215,7 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     if (list.shots.some(s => s.spoken.some(x => x.castId === id)) && !character?.voice && !character?.voiceSample) warnings.push(`角色 ${nameOf(id)} 没有声音描述，不同片段里的声音可能不一样。`);
   }
 
-  const fold = input.blocking ? foldBlocking(input.blocking, revision, lineIndex(revision)) : undefined;
+  const index = lineIndex(revision), fold = input.blocking ? foldBlocking(input.blocking, revision, index) : undefined;
   const {width, height} = input.size ?? h3Size(list.aspectRatio), orientation = list.aspectRatio === '9:16' ? 'vertical 9:16' : 'horizontal 16:9';
   const clips: RenderClip[] = planClips(list.shots, input.clipLimitSeconds ?? DEFAULT_CLIP_LIMIT).map(planned => {
     const clipWarnings = [...planned.warnings], seconds = framesToSeconds(planned.frames);
@@ -236,7 +236,9 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     const opening = fold?.before(planned.shots[0]!.sceneId, planned.shots[0]!.firstLine);
     if (opening && input.blocking) {
       const people = inFrame.map(id => ({key: [cast.get(id), displayName.get(id)].find(n => n && opening.people.has(normalizeSpeakerName(n))) ?? cast.get(id) ?? id, name: label(id)}));
-      const {text, missing} = openingState(input.blocking, opening, people);
+      // Only what the script has shown before the clip's first line: a key still under the mat is not named.
+      const first = index.at(`${planned.shots[0]!.sceneId}:${planned.shots[0]!.firstLine}`);
+      const {text, missing} = openingState(input.blocking, opening, people, ref => { const at = index.at(ref); return !!at && !!first && !index.before(first, at); });
       continuity = text;
       if (missing.length) clipWarnings.push(`走位里 ${missing.join('、')} 没有英文写法，这一段的开场状态里没写它们。请重新做剧本逻辑检查。`);
     }

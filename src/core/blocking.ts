@@ -213,8 +213,11 @@ const thingPhrase = (t: {en: string}, s: ThingState) => `${t.en.replace(/[.]$/u,
 
 /** The English opening state of a clip for the people in it: zone, posture, what each holds, and the things within
  * their reach. Pieces without English text are left out and reported. */
-export function openingState(blocking: LogicBlocking, state: SceneState, people: {key: string; name: string}[]): {text: string; missing: string[]} {
-  const zones = new Map(blocking.zones.map(z => [z.id, z])), things = new Map(blocking.things.map(t => [t.id, t])), parts: string[] = [], missing: string[] = [];
+export function openingState(blocking: LogicBlocking, state: SceneState, people: {key: string; name: string}[], revealed: (thingRef: string) => boolean = () => true): {text: string; missing: string[]} {
+  const zones = new Map(blocking.zones.map(z => [z.id, z])), parts: string[] = [], missing: string[] = [];
+  // A thing the script has not shown yet stays out of the picture, wherever it already is.
+  const things = new Map(blocking.things.filter(t => revealed(t.ref)).map(t => [t.id, t]));
+  state = {...state, things: new Map([...state.things].filter(([id]) => things.has(id)))};
   const zoneEn = (id: string | null) => { const z = id ? zones.get(id) : undefined; if (z && !english(z.en)) missing.push(z.name); return z && english(z.en) ? z.en.replace(/[.]$/u, '') : ''; };
   const occupied = new Set<string>();
   for (const {key: k, name} of people) {
@@ -227,15 +230,17 @@ export function openingState(blocking: LogicBlocking, state: SceneState, people:
     const conditions = (state.conditions.get(normalizeSpeakerName(k)) ?? []).filter(c => english(c) || (missing.push(c), false));
     if (p?.posture || where || held.length) {
       const verb = p?.posture ? `is ${p.posture}` : 'is';
-      parts.push(sentence(`${name} ${verb}${where ? ` ${where}` : ''}${held.length ? `${p?.posture || where ? ',' : ''} holding ${held.join(' and ')}` : ''}`));
+      parts.push(sentence(`${name} ${verb}${where ? ` ${where}` : ''}${held.length ? `${p?.posture || where ? ',' : ''} holding ${andList(held)}` : ''}`));
     }
-    if (conditions.length) parts.push(sentence(`${name} has ${conditions.join(' and ')}`));
+    if (conditions.length) parts.push(sentence(`${name} has ${andList(conditions)}`));
   }
   const near = [...state.things].filter(([, s]) => !s.holder && s.zone && occupied.has(s.zone)).slice(0, 4);
   for (const [id, s] of near) { const t = things.get(id)!, where = zoneEn(s.zone); if (!english(t.en)) { missing.push(t.name); continue; } if (where) parts.push(sentence(`${capitalize(thingPhrase(t, s))} is ${where}`)); }
   return {text: parts.length ? `Continuity at the start of this clip: ${parts.join(' ')}` : '', missing: [...new Set(missing)]};
 }
 const capitalize = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+/** "a, b and c". */
+const andList = (items: string[]) => items.length < 3 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 
 /** One action in plain Chinese, for the author. */
 export function describeEvent(blocking: LogicBlocking, e: LogicBlocking['events'][number]): string {

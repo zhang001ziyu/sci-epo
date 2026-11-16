@@ -141,11 +141,18 @@ describe('clips and shots', () => {
 
   test('every clip opens with the state of its first line', () => {
     const clips = planRenderBatch(input({blocking})).batch.clips;
-    expect(clips[0]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is standing in the elevator, holding a clear box with one cupcake and her phone.');
+    // The phone first appears on line 2, so the first clip's opening does not name it.
+    expect(clips[0]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is standing in the elevator, holding a clear box with one cupcake.');
     expect(clips[3]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is standing in the hallway outside the door, holding a clear box with one cupcake and her phone. LEO is standing in the hallway outside the door.');
     // After the handover the box is Leo's; scene 3 does not place Maya, so only what she holds is stated.
     expect(clips[4]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is holding her phone.');
     expect(planRenderBatch(input()).batch.clips[0]!.prompts.en!.text).not.toContain('Continuity');
+    // A thing the script shows only later is not named early, even when someone already holds it.
+    const later: LogicBlocking = {...blocking, things: blocking.things.map(t => t.id === 't2' ? {...t, ref: 's2:3'} : t)};
+    const early = planRenderBatch(input({blocking: later})).batch.clips;
+    expect(early[0]!.prompts.en!.text).toContain('MAYA is standing in the elevator, holding a clear box with one cupcake.');
+    expect(early[3]!.prompts.en!.text).toContain('MAYA is standing in the hallway outside the door, holding a clear box with one cupcake and her phone.');
+    expect(openingState(fixed, foldBlocking(fixed, revision, index).before('s1', 5)!, [{key: 'LEO', name: 'LEO'}, {key: 'MAYA', name: 'MAYA'}]).text).toContain('holding a red box of matches and a single match (lit)');
   });
 
   test('the logic request lists the lines to answer; the storyboard request carries the blocking', () => {
