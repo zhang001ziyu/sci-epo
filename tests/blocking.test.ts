@@ -107,14 +107,18 @@ describe('line-by-line answers and conditions', () => {
   };
   const sets = [{id: 'set1', name: '老林家', en: 'A small living room with the armchair facing the door; the kitchen alcove with the refrigerator is on the right.', scenes: ['s1'], zones: ['z1', 'z2']}, {id: 'set2', name: '走廊', en: 'A narrow hallway.', scenes: ['s2'], zones: ['z3']}];
   const premise = {thingId: 't1', name: '蓝信封', ref: 's1:2', placement: '贴在冰箱侧面', placedBy: 'LEO', common: true, reasonRef: null, plausible: 'yes', why: '他今晚要烧它，放在手边'};
-  const live = (value: unknown, extra: Record<string, unknown> = {premises: [premise]}) => parseLedgerOutput(JSON.stringify({...ledger(broken), ...extra, blocking: value && typeof value === 'object' && !('sets' in value) ? {...value, sets} : value}), revision, {coverage: true});
+  const act = (ref: string, action: string, extra: Record<string, unknown> = {}) => ({who: 'LEO', ref, action, common: true, reasonRef: null, plausible: 'yes', why: '他要烧信', ...extra});
+  const conduct = [act('s1:3', '划火柴'), act('s1:4', '把火苗凑向信封')];
+  const live = (value: unknown, extra: Record<string, unknown> = {premises: [premise], conduct}) => parseLedgerOutput(JSON.stringify({...ledger(broken), ...extra, blocking: value && typeof value === 'object' && !('sets' in value) ? {...value, sets} : value}), revision, {coverage: true});
 
   test('a live answer must cover every action line; a skipped line is refused by number', () => {
     expect(actionRefs(revision)).toEqual(['s1:1', 's1:2', 's1:3', 's1:4', 's1:5', 's2:1', 's2:2']);
     expect(live(byLine(fixed)).blocking!.events).toEqual(fixed.events);
     // Every place has one layout, and every thing not in someone's hands says why it is where it is.
     expect(() => live({...byLine(fixed), sets: [sets[0]]})).toThrow('场景布局漏了场景 s2');
-    expect(() => live(byLine(fixed), {})).toThrow('东西的来由漏了 1 样东西：t1（蓝信封）');
+    expect(() => live(byLine(fixed), {conduct})).toThrow('东西的来由漏了 1 样东西：t1（蓝信封）');
+    // Every hand-on-thing line is judged for physical sense.
+    expect(() => live(byLine(fixed), {premises: [premise], conduct: [conduct[0]]})).toThrow('人物的做法漏了 1 个动手的行：s1:4');
     expect(() => live(byLine(fixed, ['s1:4']))).toThrow('逐行走位漏了 1 个动作行：s1:4');
     expect(() => live(fixed)).toThrow('逐行填写 lines');
     expect(() => parseLedgerOutput(JSON.stringify({...ledger(broken), blocking: undefined}), revision, {coverage: true})).toThrow('缺少走位');
@@ -125,12 +129,15 @@ describe('line-by-line answers and conditions', () => {
 
   test('common sense: an implausible or unexplained placement or action is a finding', () => {
     const hidden = {...premise, placement: '贴在冰箱侧面最显眼处', common: false, plausible: 'no', why: '他想瞒着所有人，却贴在一进门就看见的地方'};
-    const findings = logicFindings(live(byLine(fixed), {premises: [hidden], conduct: [{who: 'LEO', ref: 's1:4', action: '当着外人烧信', common: false, reasonRef: null, plausible: 'unclear', why: '他本可以等她走了再烧'}]}), revision);
+    const findings = logicFindings(live(byLine(fixed), {premises: [hidden], conduct: [conduct[0], act('s1:4', '当着外人烧信', {common: false, plausible: 'unclear', why: '他本可以等她走了再烧'})]}), revision);
     expect(findings.map(f => [f.kind, f.ref])).toEqual([['implausible', 's1:2'], ['unmotivated', 's1:4']]);
     expect(findings[0]!.title).toContain('不合常理');
     expect(findings[1]!.title).toBe('LEO 为什么“当着外人烧信”，正文没交代');
+    // A contact the positions do not allow is a finding too.
+    const pressed = logicFindings(live(byLine(fixed), {premises: [premise], conduct: [conduct[0], act('s1:4', '把火苗压在台面上', {plausible: 'no', why: '信封贴在竖着的冰箱侧面，火苗压不到台面上'})]}), revision);
+    expect(pressed.map(f => [f.kind, f.title])).toEqual([['unmotivated', 'LEO “把火苗压在台面上”，不合常理或做不到']]);
     // Plausible and common, or explained by a line, passes.
-    expect(logicFindings(live(byLine(fixed), {premises: [{...premise, common: false, reasonRef: 's1:3'}]}), revision)).toEqual([]);
+    expect(logicFindings(live(byLine(fixed), {premises: [{...premise, common: false, reasonRef: 's1:3'}], conduct}), revision)).toEqual([]);
   });
 
   test('how a thing rests reaches the clip: taped, hidden, then taken', () => {
@@ -192,6 +199,17 @@ describe('clips and shots', () => {
     expect(system!.content).toContain('反应镜头、特写和切回来的镜头不改变它们');
     expect(JSON.parse(request!.content).blocking[1]).toEqual({sceneId: 's2', start: ['MAYA：站着，在门外走廊，拿着蛋糕盒、手机', 'LEO：站着，在门外走廊'], actions: [{n: 1, action: 'LEO：在门外走廊，站着'}, {n: 3, action: 'MAYA：在门外走廊，站着'}, {n: 7, action: 'MAYA：把“蛋糕盒”递给 LEO'}]});
     expect(JSON.parse(buildStoryboardMessages(demo())[1]!.content).blocking).toBeUndefined();
+  });
+
+  test('a revision request carries the layout, where each thing is and the problems already fixed', async () => {
+    const { buildReviseMessages, reviseFacts } = await import('../src/core/revisePrompt');
+    const facts = reviseFacts({...shortDramaDemoLedger('en')}, ['LEO 在客厅扶手椅，够不着“蓝信封”']);
+    expect(facts.layout[1]).toContain('九楼走廊（s2、s3）：A dim, narrow ninth-floor hallway');
+    expect(facts.things).toEqual(['蛋糕盒：在 MAYA 手里', '玛雅的手机：在 MAYA 手里']);
+    const [system, user] = buildReviseMessages(demo(), [], undefined, facts);
+    expect(system!.content).toContain('不要为了交代一件事或补一条问题，凭空加照片、便条、遗像');
+    expect(system!.content).toContain('每个动作在物理上要做得到');
+    expect(JSON.parse(user!.content).facts.resolved).toEqual(['LEO 在客厅扶手椅，够不着“蓝信封”']);
   });
 
   test('a logic answer the program refuses is sent again once', async () => {

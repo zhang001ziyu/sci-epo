@@ -41,6 +41,8 @@ export interface LogicLedger {
   conduct?: LogicConduct[];
 }
 export type Verdict = 'yes' | 'no' | 'unclear';
+/** What a whole-script revision must keep true: the fixed layouts, where each thing is, and problems already fixed. */
+export interface ReviseContext { layout: string[]; things: string[]; resolved: string[] }
 /** `common`: an ordinary viewer expects it without explanation. `reasonRef`: the line that explains it otherwise. */
 export interface LogicPremise { thingId: string | null; name: string; ref: string; placement: string; placedBy: string | null; common: boolean; reasonRef: string | null; plausible: Verdict; why: string }
 export interface LogicConduct { who: string; ref: string; action: string; common: boolean; reasonRef: string | null; plausible: Verdict; why: string }
@@ -169,5 +171,5 @@ export interface RenderJob { id: string; batchId: string; clipId: string; langua
 export interface WorkerToken { id: string; label: string; hash: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }
 export interface ProjectBundle { project: Project; episodes: Episode[]; revisions: Revision[]; reviews: Review[]; runs: Run[]; localizations: Localization[]; shotLists?: ShotList[]; renderBatches?: RenderBatch[]; renderJobs?: RenderJob[]; renderJobsV2?: RenderJobV2[]; renderSessions?: PublicRenderSession[]; media?: MediaAsset[]; cuts?: Cut[]; shotReviews?: ShotReview[]; logicChecks?: LogicCheck[] }
 export interface ScriptOutput { title: string; logline: string; scenes: Scene[] }
-export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible' | 'logic' | 'revise'; context: ContextSnapshot; bible?: BibleContent; blocking?: LogicBlocking; findings?: LogicFinding[]; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
+export interface ModelRequest { kind: 'generate' | 'review' | 'rewrite' | 'localize' | 'storyboard' | 'bible' | 'logic' | 'revise'; context: ContextSnapshot; bible?: BibleContent; blocking?: LogicBlocking; findings?: LogicFinding[]; reviseContext?: ReviseContext; revision?: Revision; sceneId?: string; instruction?: string; episodeTitle: string; targetLanguage?: string; reviewPass?: 'causality' | 'facts' | 'verification'; draftReview?: Pick<Review, 'assessments' | 'causality'>; draftFacts?: import('./core/reviewVerification').VerificationFacts; auditTargetIds?: string[] }
 export interface ModelProvider { mode: 'live' | 'demo'; complete(request: ModelRequest): Promise<string> }

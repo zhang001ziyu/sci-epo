@@ -90,10 +90,16 @@ export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>, 
     const covered = new Set(premises.map(p => p.thingId)), missing = blocking.things.filter(t => !covered.has(t.id) && !t.holder).map(t => `${t.id}（${t.name}）`);
     if (missing.length) reject(`东西的来由漏了 ${missing.length} 样东西：${missing.slice(0, 10).join('、')}。走位 things 里每一样不在人手里的东西，都要在 premises 里说明它为什么在那里、为什么这样放。`);
   }
-  const conduct = list(row.conduct, '人物的做法', 40).map((c, i): LogicConduct => {
+  const conduct = list(row.conduct, '人物的做法', 80).map((c, i): LogicConduct => {
     const x = record(c, `第 ${i + 1} 条人物的做法`);
     return {who: text(x.who, '人物', 60), ref: ref(x.ref, '做法'), action: text(x.action, '做法', 200), common: bool(x.common, 'common'), reasonRef: optRef(x.reasonRef, '理由'), plausible: verdict(x.plausible), why: text(x.why, '为什么合理', 300)};
   });
+  // Every hand-on-thing action is judged for physical sense, so a "possible" contact in the same zone is still checked.
+  if (options.coverage && blocking) {
+    const judged = new Set(conduct.map(c => c.ref));
+    const missing = [...new Set(blocking.events.filter(e => ['take', 'put', 'give', 'use'].includes(e.kind)).map(e => e.ref))].filter(r => !judged.has(r));
+    if (missing.length) reject(`人物的做法漏了 ${missing.length} 个动手的行：${missing.slice(0, 12).join('、')}。blocking 里每个 take、put、give、use 所在的行，都要在 conduct 里判断它合不合理、做不做得到。`);
+  }
   return {protagonist, offscreen, ending, setups, instructions, sightings, choices, ...(blocking ? {blocking} : {}), ...(premises.length ? {premises} : {}), ...(conduct.length ? {conduct} : {})};
 }
 
@@ -162,7 +168,7 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
     const unexplained = !c.common && !c.reasonRef;
     if (c.plausible === 'yes' && !unexplained) continue;
     out.push({id: `unmotivated:${c.ref}:${quote(c.who, 20)}`, kind: 'unmotivated', ref: c.ref,
-      title: c.plausible === 'no' ? `${c.who} “${quote(c.action, 40)}”，正常人不会这么做` : `${c.who} 为什么“${quote(c.action, 40)}”，正文没交代`,
+      title: c.plausible === 'no' ? `${c.who} “${quote(c.action, 40)}”，不合常理或做不到` : `${c.who} 为什么“${quote(c.action, 40)}”，正文没交代`,
       detail: `${line(c.ref)}：${c.why}`,
       fix: '让这个做法有看得见的理由（他想要什么、怕什么），或者改成这个人在这种处境下会做的事。'});
   }

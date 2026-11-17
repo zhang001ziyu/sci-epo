@@ -21,7 +21,7 @@ import { DEFAULT_DURATION_TARGET, aspectRatioOf, defaultVoiceLanguages, isShortD
 import { requireLineAlignment } from '../core/scriptLines';
 import { confirmedBible, parseBible, parseBibleOutput } from '../core/bible';
 import { carryKept, latestLogicCheck, lineIndex, logicFindings, logicGate, mergePasses, parseLedgerOutput } from '../core/logic';
-import { parseRevisePlan } from '../core/revisePrompt';
+import { parseRevisePlan, reviseFacts } from '../core/revisePrompt';
 import { bibleStamp } from '../core/shotReview';
 import { boundAdaptations, exportShotListCsv, newestAlignedAdaptations, parseAdaptationBinding, parseShotList, parseShotListOutput, shotListStatus } from '../core/shotList';
 
@@ -424,7 +424,13 @@ export function createApp(store:Store, providers:{live?:ModelProvider;demo:Model
     const open=check.findings.filter(f=>!check.kept?.[f.id]);
     if(!open.length)return fail(409,'这次检查没有待处理的问题，不需要整体改稿。');
     const note=body.note===undefined||body.note===null||body.note===''?undefined:str(body.note,'改稿说明',2000);
-    return model(e,body,{kind:'revise',context:r.context,revision:r,episodeTitle:e.title,findings:open,...(note?{instruction:note}:{})},(raw,mode)=>{
+    // What the revision must keep true: the place's layout and where each thing is, and every problem an earlier round
+    // of this lineage fixed, so one round's fix does not bring back the last round's break.
+    const lineage:Revision[]=[];for(let x:Revision|undefined=r;x&&lineage.length<20;x=x.parentId?store.get('revisions',x.parentId):undefined)lineage.push(x);
+    const ids=new Set(lineage.map(x=>x.id)),openTitles=new Set(open.map(f=>`${f.kind}:${f.title}`));
+    const resolved=[...new Set(store.all('logic_checks').filter(c=>ids.has(c.revisionId)&&c.revisionId!==r.id).flatMap(c=>c.findings).filter(f=>!openTitles.has(`${f.kind}:${f.title}`)).map(f=>f.title))].slice(0,40);
+    const reviseContext=reviseFacts(check.ledger,resolved);
+    return model(e,body,{kind:'revise',context:r.context,revision:r,episodeTitle:e.title,findings:open,reviseContext,...(note?{instruction:note}:{})},(raw,mode)=>{
      let value:Record<string,unknown>;
      try{value=JSON.parse(raw.trim().replace(/^```(?:json)?\s*/iu,'').replace(/\s*```$/u,''));}catch{throw new HttpError(502,'整体改稿的结果不是完整的 JSON，原稿保留。');}
      let plan,output;

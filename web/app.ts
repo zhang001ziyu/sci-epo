@@ -1,4 +1,6 @@
-import type { Brief, Episode, Project, ProjectBundle, Revision, Review, Scene, Localization, PublicationSettings } from '../src/types';
+import type { Brief, Episode, LogicCheck, Project, ProjectBundle, Revision, Review, Scene, Localization, PublicationSettings } from '../src/types';
+/** Whole-script revision rounds per click: revise, check, and revise again while findings stay open. */
+const MAX_REVISE_ROUNDS = 3;
 
 import { languagesView, languageOptions } from './languages';
 import { scriptLanguage } from '../src/core/languages';
@@ -132,6 +134,17 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 const post = <T>(path: string, value: unknown) => api<T>(path, {method:'POST',body:JSON.stringify(value)});
+/** Check a revision (unless just checked) and revise the whole script while findings stay open, up to the round limit.
+ * Every revision is a saved candidate; nothing is accepted. */
+async function settleScript(start: string, checkFirst: boolean): Promise<{id: string; rounds: number; open: number}> {
+  const openOf = (c: LogicCheck) => c.findings.filter(f => !c.kept?.[f.id]).length;
+  let id = start, rounds = 0, open = checkFirst ? openOf(await post<LogicCheck>(`/api/revisions/${encodeURIComponent(id)}/logic-check`, {mode: 'live'})) : 1;
+  while (open && rounds < MAX_REVISE_ROUNDS) {
+    id = (await post<Revision>(`/api/revisions/${encodeURIComponent(id)}/revise`, {mode: 'live'})).id; rounds++;
+    open = openOf(await post<LogicCheck>(`/api/revisions/${encodeURIComponent(id)}/logic-check`, {mode: 'live'}));
+  }
+  return {id, rounds, open};
+}
 /** A raw file body (media uploads): the same CSRF header and error handling as api(), with the file's own type. */
 async function upload<T>(path: string, file: Blob): Promise<T> {
   const res = await fetch(path, {method:'PUT',body:file,headers:{'Content-Type':file.type||'application/octet-stream',...(csrf?{'X-CSRF-Token':csrf}:{})}});
@@ -363,7 +376,12 @@ root.addEventListener('click', event=>{
     }
     rewriteSceneId=sceneId;render();document.querySelector<HTMLTextAreaElement>('#rewrite-instruction')?.focus();return;
   }
-  if (action==='generate') { if(!canLeave())return; void run(mode==='demo'?'正在载入演示样例…':'正在创作剧本初稿…',async()=>{const r=await post<Revision>(`/api/episodes/${encodeURIComponent(episodeId)}/generate`,{mode});await loadProject(bundle!.project.id,r.id);tab='script';notice=mode==='demo'?'已载入预设演示样例，不是针对当前设定生成的作品。':'初稿已保存。先通读，再决定需要审读和修改的地方。';});return; }
+  if (action==='generate') { if(!canLeave())return; void run(mode==='demo'?'正在载入演示样例…':'正在创作剧本初稿，写完自动检查逻辑和常识、按问题整体改稿（要十几分钟）…',async()=>{const r=await post<Revision>(`/api/episodes/${encodeURIComponent(episodeId)}/generate`,{mode});
+   if(mode==='demo'){await loadProject(bundle!.project.id,r.id);tab='script';notice='已载入预设演示样例，不是针对当前设定生成的作品。';return;}
+   // A live draft is checked and revised before the author reads it; the draft itself stays as the first version.
+   let settled;try{settled=await settleScript(r.id,true);}catch(e){await loadProject(bundle!.project.id,r.id);tab='script';notice=`初稿已保存，但自动检查或改稿没有完成：${e instanceof Error?e.message:''} 可以在审读页手动运行剧本逻辑检查。`;return;}
+   await loadProject(bundle!.project.id,settled.id);tab='review';
+   notice=settled.open?`初稿已写好并自动检查、整体改稿 ${settled.rounds} 轮，还剩 ${settled.open} 个问题，请在下面逐条处理。各版本都已保存，没有自动采用。`:`初稿已写好${settled.rounds?`，自动整体改稿 ${settled.rounds} 轮后`:'，'}检查没有问题。各版本都已保存，没有自动采用；先通读，满意再在剧本页采用。`;});return; }
   if (action==='save-script') { void run('正在保存新版本…',async()=>{const oldId=revisionId;const r=await post<Revision>(`/api/revisions/${encodeURIComponent(oldId)}/edit`,editor);localStorage.removeItem(draftKey(oldId));await loadProject(bundle!.project.id,r.id);notice='编辑已另存为新版本，原版保留。';});return; }
   if (action==='toggle-lock') { void run('正在更新场景锁定…',async()=>{const s=revision()!.scenes.find(s=>s.id===id)!;const r=await post<Revision>(`/api/revisions/${encodeURIComponent(revisionId)}/locks`,{sceneId:id,locked:!s.locked});await loadProject(bundle!.project.id,r.id);notice=s.locked?'这场已解锁。':'这场已锁定，局部改稿会保留它。';});return; }
   if(action==='verify-review'){
@@ -371,7 +389,12 @@ root.addEventListener('click', event=>{
     void run('正在对照原文核实已有审稿…',async()=>{await post<Review>(`/api/reviews/${encodeURIComponent(rv.id)}/verify`,{mode:'live'});await loadProject(bundle!.project.id,revisionId);tab='review';notice='解释核实已另存为新记录，原审稿继续保留。';});return;
   }
   if(action==='logic-run'){void run('正在检查剧本逻辑…',async()=>{await post(`/api/revisions/${encodeURIComponent(revisionId)}/logic-check`,{mode:'live'});await loadProject(bundle!.project.id,revisionId);tab='review';notice='剧本逻辑检查已保存。请逐条处理：改稿解决，或写明保留的理由。';});return;}
-  if(action==='logic-revise'){const from=revisionId;void run('正在按检查结果整体改稿，再检查新版本…',async()=>{const r=await post<Revision>(`/api/revisions/${encodeURIComponent(from)}/revise`,{mode:'live'});await post(`/api/revisions/${encodeURIComponent(r.id)}/logic-check`,{mode:'live'});await loadProject(bundle!.project.id,r.id);tab='review';notice='整体改稿已另存为新版本并重新检查，原稿保留。去“版本对读”看改了哪里；满意就在剧本页采用它。';});return;}
+  if(action==='logic-revise'){const from=revisionId;void run('正在按检查结果整体改稿，再检查新版本（最多三轮，每轮几分钟）…',async()=>{
+   // Revise, check the result, and revise again while open findings remain: the author sees one settled candidate.
+   const {id,rounds,open}=await settleScript(from,false);
+   await loadProject(bundle!.project.id,id);tab='review';
+   notice=open?`整体改稿 ${rounds} 轮后还剩 ${open} 个问题，最新一版已另存，原稿保留。请看下面的问题：改稿解决，或写明保留的理由。`:`整体改稿 ${rounds} 轮后检查已没有问题，另存为新版本，原稿保留。去“版本对读”看改了哪里；满意就在剧本页采用它。`;
+  });return;}
   if(action==='logic-keep'||action==='logic-unkeep'){const reason=action==='logic-keep'?(keepDrafts.get(id)??'').trim():null;if(action==='logic-keep'&&!reason){error='请先写一句为什么保留这一条。';render();return;}void run(action==='logic-keep'?'正在保存保留理由…':'正在撤销保留…',async()=>{bundle=await post<ProjectBundle>(`/api/logic-checks/${encodeURIComponent(el.dataset.check??'')}/keep`,{findingId:id,reason});keepDrafts.delete(id);});return;}
   if(action==='logic-use'){const f=bundle?.logicChecks?.flatMap(c=>c.findings).find(x=>x.id===id),sceneId=el.dataset.scene??'';if(!f)return;if(revision()?.scenes.find(s=>s.id===sceneId)?.locked){error='这场已锁定，请先在剧本页解锁。';render();return;}if(revision()?.scenes.some(s=>s.id===sceneId))rewriteSceneId=sceneId;rewriteInstruction.clear();rewriteInstruction.edit(findingInstruction(f));notice='这条问题已带入右侧的改稿框。看一下修改意图，再点改稿；候选会另存，不会自动采用。';render();return;}
   if (action==='review') { void run(mode==='demo'?'正在载入演示审稿…':'正在审读这版剧本…',async()=>{await post<Review>(`/api/revisions/${encodeURIComponent(revisionId)}/review`,{mode});await loadProject(bundle!.project.id,revisionId);tab='review';notice='审读结果已保存。请结合原文判断每条建议。';});return; }

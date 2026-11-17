@@ -98,6 +98,7 @@ export function shortDramaDemoLedger(language: 'en' | 'zh'): LogicLedger {
     sightings: [{who: en ? 'MAYA' : '玛雅', what: en ? 'the message on her phone' : '手机上的消息', ref: 's3:2', visible: 'yes', why: en ? 'it is on the phone in her hand' : '消息就在她手里的手机上'}],
     choices: [{ref: 's2:6', choice: en ? 'Maya sings although singing costs extra' : '唱歌本来要加钱，玛雅还是唱了', cost: en ? 'she gives away what she said she charges for' : '她白白做了本该加钱的事'}],
     blocking: demoBlocking(en ? 'MAYA' : '玛雅', en ? 'LEO' : '老林'),
+    conduct: [{who: en ? 'MAYA' : '玛雅', ref: 's2:7', action: en ? 'hands Leo the cupcake box at his door' : '在门口把蛋糕盒递给老林', common: true, reasonRef: null, plausible: 'yes', why: en ? 'she is delivering it and stands at his door' : '她来送货，人就在他门口'}],
   };
 }
 

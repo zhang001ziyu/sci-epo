@@ -165,7 +165,7 @@ export function buildModelMessages(request: ModelRequest): {role: 'system' | 'us
   if (request.kind === 'storyboard') return buildStoryboardMessages(revision, request.bible, request.blocking);
   if (request.kind === 'bible') return buildBibleMessages(revision);
   if (request.kind === 'logic') return buildLogicMessages(revision);
-  if (request.kind === 'revise') return buildReviseMessages(revision, request.findings ?? [], request.instruction);
+  if (request.kind === 'revise') return buildReviseMessages(revision, request.findings ?? [], request.instruction, request.reviseContext);
   if (request.kind === 'localize') {
     const target = languageTag(request.targetLanguage);
     if (target === language) throw new Error('目标语言必须与原稿不同。');
