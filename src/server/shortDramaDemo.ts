@@ -106,6 +106,8 @@ function demoBlocking(maya: string, leo: string): NonNullable<LogicLedger['block
   const ev = (ref: string, who: string, kind: NonNullable<LogicLedger['blocking']>['events'][number]['kind'], extra: {zone?: string; posture?: 'standing'; thing?: string; to?: string} = {}) =>
     ({ref, who, kind, zone: extra.zone ?? null, posture: extra.posture ?? null, thing: extra.thing ?? null, with: null, to: extra.to ?? null, state: null});
   return {
+    sets: [{id: 'set1', name: '电梯和九楼走廊', en: 'A small apartment elevator whose doors open onto a dim ninth-floor hallway.', scenes: ['s1'], zones: ['z1', 'z2']},
+      {id: 'set2', name: '九楼走廊', en: 'A dim, narrow ninth-floor hallway; Leo\'s apartment door is on the left near the end, the elevator behind the viewer.', scenes: ['s2', 's3'], zones: ['z2']}],
     zones: [{id: 'z1', name: '电梯里', en: 'in the elevator'}, {id: 'z2', name: '老林家门口', en: 'at the door of Leo\'s apartment'}],
     things: [{id: 't1', name: '蛋糕盒', en: 'a clear box with one cupcake', ref: 's1:1', zone: null, holder: maya}, {id: 't2', name: '玛雅的手机', en: 'her phone', ref: 's1:2', zone: null, holder: maya}],
     events: [ev('s1:1', maya, 'at', {zone: 'z1', posture: 'standing'}), ev('s1:4', maya, 'move', {zone: 'z2'}),

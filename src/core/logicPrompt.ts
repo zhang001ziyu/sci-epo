@@ -21,25 +21,30 @@ export const LOGIC_GUIDANCE = `
 5. sightings：人物看见、发现、读到推动剧情的东西的每一行。visible：按正文写的位置和空间，她在那里能不能看见（yes、no、unclear），why 用一句中文说明。比如站在门口，看不到锁在抽屉里的东西。
 6. protagonist 写主角的名字。choices 只列主角亲自做出、本可以不做、要付出她在乎的代价（钱、安全、工作、关系）、并且改变了接下来发生什么的选择。照吩咐办事、走路、开门、看手机、被动看到东西都不算。没有就写空列表。
 7. blocking：人物站在哪、东西在哪、谁手里拿着什么。程序据此判断“够不够得着、有没有走过去”，并把每一行开始时的状态交给分镜和视频。只照正文记，不要替剧本补动作。
+   - sets：每个地点一份固定布局，id 写 set1、set2……，scenes 列出发生在这里的场景编号（每一场都要归到一个布局里），zones 列出属于这里的区域。en 用两三句英文写清这个地方的固定陈设和它们的相对位置（例如门在哪面墙、沙发对着什么、厨房在门的哪一侧、桌子在哪里），后面所有镜头都按这一份搭景，所以要和正文写到的位置一致；正文没写的，按这种地方最常见的样子补，但不要和正文冲突。
    - zones：人物会待的区域，id 写 z1、z2……。一个区域就是站在那里伸手、跨一步能碰到的范围：同一间屋子里隔开几步的角落要分开（比如沙发旁、灶台旁），但门外、门口、门槛是同一个区域，不要拆开。name 用中文；en 用能接在 is 后面的英文介词短语，例如 "by the front door"、"in the armchair by the window"。
-   - things：人物会拿、放、递、碰、打开、点燃、撕开的东西，id 写 t1、t2……。name 用中文，en 用英文名词短语（例如 "a brass key"）。ref 写它第一次出现的那一行；zone 写它一开始所在的区域，或者 holder 写一开始拿着它的人（只写一个，不知道就都写 null）。门、窗这类连在两个区域之间的东西，zone 写 null。同一种东西的不同件要分开：一整盒和从盒里抽出的一支是两样东西；火苗、亮光是那样东西的状态，不是另一样东西。
+   - things：人物会拿、放、递、碰、打开、点燃、撕开的东西，id 写 t1、t2……。name 用中文，en 用英文名词短语（例如 "a brass key"）。ref 写它第一次出现的那一行；zone 写它一开始所在的区域，或者 holder 写一开始拿着它的人（只写一个，不知道就都写 null）。门、窗这类连在两个区域之间的东西，zone 写 null。不在人手里的东西，placement 用能接在 is 后面的英文短语写它具体怎么放着，例如 "lying on the coffee table"、"hidden under the doormat"、"inside a closed kitchen drawer"，正文写了就照正文，没写就写最自然的放法。同一种东西的不同件要分开：一整盒和从盒里抽出的一支是两样东西；火苗、亮光是那样东西的状态，不是另一样东西。
    - lines：user.blockingLines 里的每一个行号都要有一项，按顺序，一个不漏。每项的 events 列出这一行里改变人物位置、姿势、持物、身体状况的动作，以及每个直接对东西动手的动作，同一行有几个就按先后列几项；这一行只是神情、目光、声音、环境或屏幕上的字，没有这类动作，就写 "events": []。kind：
      at：人物在这一场第一次出现时的位置（zone）和姿势（posture）。只在每场第一次出现时用一次；之后位置变了，必须是正文里有 move、stand 或 sit。
      move：走到另一个区域（zone 必填）。人物从门外进来也是 move。
      stand、sit：站起来、坐下（sit 可写坐到哪个区域）。正文明确写站起来才算 stand；撑起上身、挺直腰不算。
      take：拿起或接过 thing。put：把 thing 放下，zone 写放到哪个区域（放在身边就写 null）。give：把 thing 递给 to。
      use：直接对 thing 动手：碰、按、打开、点燃、撕开、把手里的东西凑到它上面。with 写用来做这件事的、手里的东西（没有就 null）；state 写动作之后 thing 的状态，用英文短语，例如 "lit"、"open"、"torn"，没有变化写 null。
+     put 和 use 改变了东西的放法时（放到桌上、掀开盖着它的东西），placement 写之后的放法（英文短语），没有变化写 null。
      condition：人物身上留下、后面镜头也要看得见的变化：受伤、烫伤、流血、衣服湿透或撕破、脸上的泥。state 用能接在 has 后面的英文名词短语，例如 "a burned right palm"、"rain-soaked clothes"。recover：这种变化结束（包扎好、换了衣服），state 写和 condition 一字不差的那个短语。一时的表情、出汗、发抖不算。
      posture 只能是 standing、sitting、lying、kneeling，不是 at 就写 null。who 写剧本里的人名。不需要的字段写 null。
    逐行填写时注意：凡是人物用手或手里的东西碰到、凑向、伸向、举到某样东西跟前的行（例如“把火苗凑向某物”），都要有一项 use，哪怕动作没做完。
    正文没写走过去，就不要列 move；正文没写拿起，就不要列 take。宁可让程序报出问题，也不要为了说得通补一个正文里没有的动作。
+8. premises：常识核对。blocking.things 里每一样不在人手里的东西都要有一项（thingId 写它的编号），另外加上剧情依赖、但不是具体物件的情况（比如某人一个人住、门没锁），thingId 写 null。每项回答：placement 用中文写它在哪、怎么放着；placedBy 写谁放的（不知道写 null）；common：普通观众看到它这样放，会不会觉得理所当然、不需要解释；reasonRef：正文给出这样放的理由的那一行，没有写 null；plausible：按这个人的意图和日常常识，这样放合不合理（yes、no、unclear）；why 用一句中文说明。
+   判断时站在放东西的人的立场想：想藏起来的东西（秘密、证据、钱、钥匙）不会放在别人一进门就看见的地方；要销毁、要用的东西会放在手边；东西会受到重力、粘性、天气这些常识的约束，不会凭空粘在、立在、挂在做不到的地方；一样东西不会无缘无故出现在两个地方。不要因为剧情需要就判 yes。
+9. conduct：推动剧情的每个关键做法（藏、销毁、闯入、隐瞒、冒险、违背要求、伤害自己或别人），列出 who、ref、action（中文），common：普通观众会不会觉得这个人这样做理所当然；reasonRef：正文给出动机的那一行，没有写 null；plausible：这个人在这种处境、以他的性格和目的，会不会这样做（yes、no、unclear）；why 用一句中文说明。如果有明显更简单、更安全的做法而人物没选，又没有理由，就判 unclear 或 no。
 `.trim();
 
 export function buildLogicMessages(revision: Revision): {role: 'system' | 'user'; content: string}[] {
   const brief = revision.context.brief;
-  const format = '{"protagonist":"主角名","offscreen":[{"character":"人名","messageRef":"s2:12","claims":[{"fact":"她知道的事","sourceKind":"self|history|present|told|sees|earlier|brief|none","sourceRef":"s1:3 或 null"}]}],"ending":{"ref":"s2:21","question":"结尾的问题","dependsOn":[{"thing":"打火机","kind":"prop|rule|relationship|fact","firstRef":"s2:21 或 null"}]},"setups":[{"thing":"铜钥匙","ref":"s1:5","payoffRef":null,"bearsOnEnding":false}],"instructions":[{"text":"别开灯","ref":"s1:3","reasonRef":null}],"sightings":[{"who":"人名","what":"看见的东西","ref":"s2:14","visible":"yes|no|unclear","why":"一句中文说明"}],"choices":[{"ref":"s1:9","choice":"主角的选择","cost":"她付出的代价"}],"blocking":{"zones":[{"id":"z1","name":"门口","en":"by the front door"}],"things":[{"id":"t1","name":"铜钥匙","en":"a brass key","ref":"s1:5","zone":"z1","holder":null}],"lines":[{"ref":"s1:1","events":[{"who":"人名","kind":"at|move|stand|sit|take|put|give|use|condition|recover","zone":"z1 或 null","posture":"standing|sitting|lying|kneeling 或 null","thing":"t1 或 null","with":"t2 或 null","to":"人名 或 null","state":"英文短语 或 null"}]},{"ref":"s1:2","events":[]}]}}';
+  const format = '{"protagonist":"主角名","offscreen":[{"character":"人名","messageRef":"s2:12","claims":[{"fact":"她知道的事","sourceKind":"self|history|present|told|sees|earlier|brief|none","sourceRef":"s1:3 或 null"}]}],"ending":{"ref":"s2:21","question":"结尾的问题","dependsOn":[{"thing":"打火机","kind":"prop|rule|relationship|fact","firstRef":"s2:21 或 null"}]},"setups":[{"thing":"铜钥匙","ref":"s1:5","payoffRef":null,"bearsOnEnding":false}],"instructions":[{"text":"别开灯","ref":"s1:3","reasonRef":null}],"sightings":[{"who":"人名","what":"看见的东西","ref":"s2:14","visible":"yes|no|unclear","why":"一句中文说明"}],"choices":[{"ref":"s1:9","choice":"主角的选择","cost":"她付出的代价"}],"blocking":{"sets":[{"id":"set1","name":"地点名","en":"Fixed layout in English: fixtures and where they stand relative to each other.","scenes":["s1"],"zones":["z1"]}],"zones":[{"id":"z1","name":"门口","en":"by the front door"}],"things":[{"id":"t1","name":"铜钥匙","en":"a brass key","ref":"s1:5","zone":"z1","holder":null,"placement":"hidden under the doormat"}],"lines":[{"ref":"s1:1","events":[{"who":"人名","kind":"at|move|stand|sit|take|put|give|use|condition|recover","zone":"z1 或 null","posture":"standing|sitting|lying|kneeling 或 null","thing":"t1 或 null","with":"t2 或 null","to":"人名 或 null","state":"英文短语 或 null","placement":"英文短语 或 null"}]},{"ref":"s1:2","events":[]}]},"premises":[{"thingId":"t1","name":"铜钥匙","ref":"s1:5","placement":"压在门口的脚垫下","placedBy":"人名 或 null","common":true,"reasonRef":null,"plausible":"yes|no|unclear","why":"一句中文说明"}],"conduct":[{"who":"人名","ref":"s1:9","action":"中文写他做了什么","common":false,"reasonRef":"s1:8 或 null","plausible":"yes|no|unclear","why":"一句中文说明"}]}';
   return [
-    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${LOGIC_GUIDANCE}\n输出格式：${format}。fact、question、why、choice、cost 用简体中文写。只返回这一个 JSON 对象。`},
+    {role: 'system', content: `${studioIntro(brief, scriptLanguage(revision))}\n${LOGIC_GUIDANCE}\n输出格式：${format}。fact、question、why、choice、cost、action 用简体中文写。只返回这一个 JSON 对象。`},
     {role: 'user', content: JSON.stringify({
       task: '按正文填写剧本逻辑账。',
       brief: {characters: brief.characters, worldRules: brief.worldRules, premise: brief.premise},

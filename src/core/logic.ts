@@ -2,7 +2,7 @@
  * setups pay off, which instructions lack a reason, what a character could not see, which choices cost the
  * protagonist something), and the program decides the findings from it. Shot lists and video need every finding of
  * the accepted revision to be fixed in a new revision or kept by the author with a reason. Browser-safe. */
-import type { Episode, LogicCheck, LogicFinding, LogicLedger, Revision } from '../types';
+import type { Episode, LogicCheck, LogicConduct, LogicFinding, LogicLedger, LogicPremise, Revision, Verdict } from '../types';
 import { actionRefs, foldBlocking, parseBlocking } from './blocking';
 import { scriptLines } from './scriptLines';
 
@@ -75,9 +75,26 @@ export function parseLedger(value: unknown, revision: Pick<Revision, 'scenes'>, 
   });
   let blocking;
   if (options.coverage && (row.blocking === undefined || row.blocking === null)) reject('缺少走位（blocking）。');
-  try { blocking = row.blocking === undefined || row.blocking === null ? undefined : parseBlocking(row.blocking, ref, options.coverage ? actionRefs(revision) : undefined); }
+  try { blocking = row.blocking === undefined || row.blocking === null ? undefined : parseBlocking(row.blocking, ref, options.coverage ? actionRefs(revision) : undefined, options.coverage ? revision.scenes.map(s => s.id) : undefined); }
   catch (error) { return reject(error instanceof Error ? error.message : '走位格式无效。'); }
-  return {protagonist, offscreen, ending, setups, instructions, sightings, choices, ...(blocking ? {blocking} : {})};
+  const verdict = (v: unknown): Verdict => ['yes', 'no', 'unclear'].includes(v as string) ? v as Verdict : reject('plausible 只能是 yes、no 或 unclear。');
+  const bool = (v: unknown, label: string): boolean => typeof v === 'boolean' ? v : reject(`${label}需为 true 或 false。`);
+  const thingIds = new Set(blocking?.things.map(t => t.id) ?? []);
+  const premises = list(row.premises, '东西的来由', 60).map((p, i): LogicPremise => {
+    const x = record(p, `第 ${i + 1} 条东西的来由`);
+    const thingId = x.thingId === undefined || x.thingId === null || x.thingId === '' ? null : typeof x.thingId === 'string' && thingIds.has(x.thingId) ? x.thingId : reject(`东西的来由里的 ${String(x.thingId)} 不在走位的东西表里。`);
+    return {thingId, name: text(x.name, '东西', 80), ref: ref(x.ref, '东西出现'), placement: text(x.placement, '东西怎么放着', 200), placedBy: x.placedBy === null || x.placedBy === undefined || x.placedBy === '' ? null : text(x.placedBy, '谁放的', 60),
+      common: bool(x.common, 'common'), reasonRef: optRef(x.reasonRef, '理由'), plausible: verdict(x.plausible), why: text(x.why, '为什么合理', 300)};
+  });
+  if (options.coverage && blocking) {
+    const covered = new Set(premises.map(p => p.thingId)), missing = blocking.things.filter(t => !covered.has(t.id) && !t.holder).map(t => `${t.id}（${t.name}）`);
+    if (missing.length) reject(`东西的来由漏了 ${missing.length} 样东西：${missing.slice(0, 10).join('、')}。走位 things 里每一样不在人手里的东西，都要在 premises 里说明它为什么在那里、为什么这样放。`);
+  }
+  const conduct = list(row.conduct, '人物的做法', 40).map((c, i): LogicConduct => {
+    const x = record(c, `第 ${i + 1} 条人物的做法`);
+    return {who: text(x.who, '人物', 60), ref: ref(x.ref, '做法'), action: text(x.action, '做法', 200), common: bool(x.common, 'common'), reasonRef: optRef(x.reasonRef, '理由'), plausible: verdict(x.plausible), why: text(x.why, '为什么合理', 300)};
+  });
+  return {protagonist, offscreen, ending, setups, instructions, sightings, choices, ...(blocking ? {blocking} : {}), ...(premises.length ? {premises} : {}), ...(conduct.length ? {conduct} : {})};
 }
 
 export function parseLedgerOutput(raw: string, revision: Pick<Revision, 'scenes'>, options: LedgerOptions = {}): LogicLedger {
@@ -132,6 +149,23 @@ export function logicFindings(ledger: LogicLedger, revision: Pick<Revision, 'sce
     detail: `${ledger.protagonist} 一直在走路、看手机、照吩咐做事，推动剧情的都是别人或消息。主角不做选择，观众就不会替她着急。`,
     fix: `给 ${ledger.protagonist} 一个要付代价的决定，比如冒着罚款或风险做一件规定之外的事。`});
   if (ledger.blocking) out.push(...foldBlocking(ledger.blocking, revision, index).findings);
+  // Common sense: a thing is where it is, placed the way it is, for a reason an ordinary viewer accepts.
+  for (const p of ledger.premises ?? []) {
+    const unexplained = !p.common && !p.reasonRef;
+    if (p.plausible === 'yes' && !unexplained) continue;
+    out.push({id: `implausible:${p.ref}:${quote(p.name, 40)}`, kind: 'implausible', ref: p.ref,
+      title: p.plausible === 'no' ? `“${quote(p.name, 30)}”${quote(p.placement, 40)}，不合常理` : `“${quote(p.name, 30)}”为什么${quote(p.placement, 40)}，正文没交代`,
+      detail: `${line(p.ref)}：${p.why}${p.placedBy ? `（放的人：${p.placedBy}）` : ''}${unexplained && p.plausible === 'yes' ? ' 观众不会自然想到它会这样放着，正文也没给理由。' : ''}`,
+      fix: p.plausible === 'no' ? '换一个符合这个人意图的放法或地点（要藏的东西藏起来，要用的东西放在手边），或者加一句让观众信服的理由。' : '加半句理由（台词或动作），或者改成观众一看就懂的放法。'});
+  }
+  for (const c of ledger.conduct ?? []) {
+    const unexplained = !c.common && !c.reasonRef;
+    if (c.plausible === 'yes' && !unexplained) continue;
+    out.push({id: `unmotivated:${c.ref}:${quote(c.who, 20)}`, kind: 'unmotivated', ref: c.ref,
+      title: c.plausible === 'no' ? `${c.who} “${quote(c.action, 40)}”，正常人不会这么做` : `${c.who} 为什么“${quote(c.action, 40)}”，正文没交代`,
+      detail: `${line(c.ref)}：${c.why}`,
+      fix: '让这个做法有看得见的理由（他想要什么、怕什么），或者改成这个人在这种处境下会做的事。'});
+  }
   const order = (f: LogicFinding) => { const r = index.at(f.ref); return r ? r.scene * 10_000 + r.line : 1e9; };
   return out.sort((a, b) => order(a) - order(b));
 }

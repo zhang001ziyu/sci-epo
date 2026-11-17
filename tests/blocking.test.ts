@@ -105,17 +105,41 @@ describe('line-by-line answers and conditions', () => {
     const {events, ...rest} = blocking;
     return {...rest, lines: actionRefs(revision).filter(r => !drop.includes(r)).map(ref => ({ref, events: events.filter(e => e.ref === ref).map(({ref: _, ...e}) => e)}))};
   };
-  const live = (value: unknown) => parseLedgerOutput(JSON.stringify({...ledger(broken), blocking: value}), revision, {coverage: true});
+  const sets = [{id: 'set1', name: '老林家', en: 'A small living room with the armchair facing the door; the kitchen alcove with the refrigerator is on the right.', scenes: ['s1'], zones: ['z1', 'z2']}, {id: 'set2', name: '走廊', en: 'A narrow hallway.', scenes: ['s2'], zones: ['z3']}];
+  const premise = {thingId: 't1', name: '蓝信封', ref: 's1:2', placement: '贴在冰箱侧面', placedBy: 'LEO', common: true, reasonRef: null, plausible: 'yes', why: '他今晚要烧它，放在手边'};
+  const live = (value: unknown, extra: Record<string, unknown> = {premises: [premise]}) => parseLedgerOutput(JSON.stringify({...ledger(broken), ...extra, blocking: value && typeof value === 'object' && !('sets' in value) ? {...value, sets} : value}), revision, {coverage: true});
 
   test('a live answer must cover every action line; a skipped line is refused by number', () => {
     expect(actionRefs(revision)).toEqual(['s1:1', 's1:2', 's1:3', 's1:4', 's1:5', 's2:1', 's2:2']);
     expect(live(byLine(fixed)).blocking!.events).toEqual(fixed.events);
+    // Every place has one layout, and every thing not in someone's hands says why it is where it is.
+    expect(() => live({...byLine(fixed), sets: [sets[0]]})).toThrow('场景布局漏了场景 s2');
+    expect(() => live(byLine(fixed), {})).toThrow('东西的来由漏了 1 样东西：t1（蓝信封）');
     expect(() => live(byLine(fixed, ['s1:4']))).toThrow('逐行走位漏了 1 个动作行：s1:4');
     expect(() => live(fixed)).toThrow('逐行填写 lines');
     expect(() => parseLedgerOutput(JSON.stringify({...ledger(broken), blocking: undefined}), revision, {coverage: true})).toThrow('缺少走位');
     // Dialogue lines are not asked for.
     const talk: Revision = {...revision, scenes: [{...revision.scenes[0]!, content: 'Leo sits.\nLEO: Go.\nMAYA\nNo.'}, revision.scenes[1]!]};
     expect(actionRefs(talk)).toEqual(['s1:1', 's2:1', 's2:2']);
+  });
+
+  test('common sense: an implausible or unexplained placement or action is a finding', () => {
+    const hidden = {...premise, placement: '贴在冰箱侧面最显眼处', common: false, plausible: 'no', why: '他想瞒着所有人，却贴在一进门就看见的地方'};
+    const findings = logicFindings(live(byLine(fixed), {premises: [hidden], conduct: [{who: 'LEO', ref: 's1:4', action: '当着外人烧信', common: false, reasonRef: null, plausible: 'unclear', why: '他本可以等她走了再烧'}]}), revision);
+    expect(findings.map(f => [f.kind, f.ref])).toEqual([['implausible', 's1:2'], ['unmotivated', 's1:4']]);
+    expect(findings[0]!.title).toContain('不合常理');
+    expect(findings[1]!.title).toBe('LEO 为什么“当着外人烧信”，正文没交代');
+    // Plausible and common, or explained by a line, passes.
+    expect(logicFindings(live(byLine(fixed), {premises: [{...premise, common: false, reasonRef: 's1:3'}]}), revision)).toEqual([]);
+  });
+
+  test('how a thing rests reaches the clip: taped, hidden, then taken', () => {
+    const taped: LogicBlocking = {...fixed, things: fixed.things.map(t => t.id === 't1' ? {...t, placement: 'taped to the side of the refrigerator'} : t)};
+    expect(openingState(taped, foldBlocking(taped, revision, index).before('s1', 5)!, [{key: 'LEO', name: 'LEO'}]).text).toContain('A blue envelope is taped to the side of the refrigerator.');
+    const taken: LogicBlocking = {...taped, events: [...taped.events, ev('s1:5', 'LEO', 'take', {thing: 't1'}), ev('s2:1', 'LEO', 'put', {thing: 't1', zone: 'z3', placement: 'lying on the hallway floor'})]};
+    const later = foldBlocking(taken, revision, index);
+    expect(later.before('s2', 1)!.things.get('t1')).toMatchObject({holder: 'LEO', placement: null});
+    expect(later.before('s2', 2)!.things.get('t1')).toMatchObject({holder: null, zone: 'z3', placement: 'lying on the hallway floor'});
   });
 
   test('a burn lasts into later scenes and clips until the script ends it', () => {
@@ -147,6 +171,12 @@ describe('clips and shots', () => {
     // After the handover the box is Leo's; scene 3 does not place Maya, so only what she holds is stated.
     expect(clips[4]!.prompts.en!.text).toContain('Continuity at the start of this clip: MAYA is holding her phone.');
     expect(planRenderBatch(input()).batch.clips[0]!.prompts.en!.text).not.toContain('Continuity');
+    // Someone who enters after the first shot is described for when they appear, with only what they hold.
+    expect(clips[4]!.prompts.en!.text).toContain('When they appear later in this clip: LEO is holding a clear box with one cupcake.');
+    // The place's fixed layout opens every clip of its scenes.
+    const laid = planRenderBatch(input({blocking: {...blocking, sets: [{id: 'set1', name: '走廊', en: 'A narrow ninth-floor hallway; Leo\'s door is at the far end on the left', scenes: ['s2', 's3'], zones: ['z2']}]}})).batch.clips;
+    expect(laid[2]!.prompts.en!.text).toContain('Fixed layout of this place, the same in every shot: A narrow ninth-floor hallway; Leo\'s door is at the far end on the left.');
+    expect(laid[0]!.prompts.en!.text).not.toContain('Fixed layout');
     // A thing the script shows only later is not named early, even when someone already holds it.
     const later: LogicBlocking = {...blocking, things: blocking.things.map(t => t.id === 't2' ? {...t, ref: 's2:3'} : t)};
     const early = planRenderBatch(input({blocking: later})).batch.clips;

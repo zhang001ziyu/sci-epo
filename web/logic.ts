@@ -6,7 +6,17 @@ import { scriptLines } from '../src/core/scriptLines';
 import { describeEvent } from '../src/core/blocking';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]!));
-const KIND: Record<LogicFinding['kind'], string> = {offscreen_knowledge: '场外人物知道了不该知道的事', ending_unstated: '结尾靠的东西没在正文里交代', ending_late: '结尾靠的东西最后才出现', dead_setup: '埋下的东西没用上', unexplained_instruction: '要求没有理由', unseen: '位置上看不到', no_choice: '主角没有做选择', out_of_reach: '够不着，也没走过去', not_holding: '手里没有这样东西', no_move: '位置或姿势变了，没有动作'};
+const KIND: Record<LogicFinding['kind'], string> = {offscreen_knowledge: '场外人物知道了不该知道的事', ending_unstated: '结尾靠的东西没在正文里交代', ending_late: '结尾靠的东西最后才出现', dead_setup: '埋下的东西没用上', unexplained_instruction: '要求没有理由', unseen: '位置上看不到', no_choice: '主角没有做选择', out_of_reach: '够不着，也没走过去', not_holding: '手里没有这样东西', no_move: '位置或姿势变了，没有动作', implausible: '不合常理的放法或设定', unmotivated: '人物做法没有理由'};
+const VERDICT: Record<string, string> = {yes: '合理', no: '不合理', unclear: '说不清'};
+
+/** The common-sense answers the check gave: why each thing is where it is, why each key action happens. */
+function premisesView(check: LogicCheck): string {
+  const p = check.ledger.premises ?? [], c = check.ledger.conduct ?? [];
+  if (!p.length && !c.length) return '';
+  const rows = [...p.map(x => `<tr><td>${esc(x.ref)}</td><td>${esc(x.name)}：${esc(x.placement)}${x.placedBy ? `（${esc(x.placedBy)} 放的）` : ''}</td><td>${esc(VERDICT[x.plausible])}${!x.common && !x.reasonRef ? '，没交代理由' : ''}</td><td>${esc(x.why)}</td></tr>`),
+    ...c.map(x => `<tr><td>${esc(x.ref)}</td><td>${esc(x.who)}：${esc(x.action)}</td><td>${esc(VERDICT[x.plausible])}${!x.common && !x.reasonRef ? '，没交代理由' : ''}</td><td>${esc(x.why)}</td></tr>`)].join('');
+  return `<details class="logic-blocking"><summary>常识和动机（${p.length} 样东西，${c.length} 个做法）</summary><p class="small muted">每样东西为什么在那里、为什么这样放，每个关键做法为什么这么做。判“不合理”或没交代理由的，会列成上面的问题。</p><table class="logic-blocking-table"><thead><tr><th>行</th><th>内容</th><th>判断</th><th>理由</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+}
 
 /** The blocking the check read from the script, action by action, so the author can see where each person is. */
 function blockingView(check: LogicCheck, revision: Revision): string {
@@ -15,8 +25,9 @@ function blockingView(check: LogicCheck, revision: Revision): string {
   const zone = (id: string | null) => id ? b.zones.find(z => z.id === id)?.name ?? id : '';
   const lines = new Map(revision.scenes.map(s => [s.id, scriptLines(s.content)]));
   const rows = b.events.map(e => { const [scene, n] = e.ref.split(':'); return `<tr><td>${esc(e.ref)}</td><td>${esc(lines.get(scene!)?.[Number(n) - 1] ?? '')}</td><td>${esc(e.who)}</td><td>${esc(describeEvent(b, e))}</td></tr>`; }).join('');
-  const start = b.things.map(t => `${t.name}：${t.holder ? `${t.holder} 手里` : t.zone ? zone(t.zone) : '不明'}`).join('；');
+  const start = b.things.map(t => `${t.name}：${t.holder ? `${t.holder} 手里` : t.zone ? zone(t.zone) : '不明'}${t.placement ? `（${t.placement}）` : ''}`).join('；');
   return `<details class="logic-blocking"><summary>走位和持物（${b.events.length} 个动作）</summary><p class="small muted">程序按这张表推算每一行开始时谁在哪、站着还是坐着、手里拿着什么、身上有没有伤，交给分镜，再写进每个视频片段的开场。表和正文对不上时，以正文为准：改正文后重新检查。</p>`
+    + (b.sets ?? []).map(s => `<p class="small"><span class="label">布局 · ${esc(s.name)}（${esc(s.scenes.join('、'))}）</span>${esc(s.en)}</p>`).join('')
     + `<p class="small"><span class="label">区域</span>${esc(b.zones.map(z => z.name).join('、') || '无')}</p><p class="small"><span class="label">东西一开始在哪</span>${esc(start || '无')}</p>`
     + `<table class="logic-blocking-table"><thead><tr><th>行</th><th>正文</th><th>人物</th><th>动作</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }
@@ -30,7 +41,7 @@ export function logicView(o: {bundle: ProjectBundle; revision: Revision; episode
   const gate = logicGate(episode, bundle.logicChecks);
   const disabled = (c = false) => o.busy || c ? 'disabled' : '';
   const run = `<button class="button ${check ? 'subtle' : 'primary'}" data-action="logic-run" ${disabled(!o.live || o.dirty)}>${check ? '重新检查这一版' : '检查这一版的剧本逻辑'}</button>`;
-  const intro = '<p class="small muted">拍视频之前，先把剧本的逻辑捋顺。每次检查让模型独立核对两遍，任何一遍查出的问题都会列出来。这一步逐条核对：场外人物知道的事有没有来源；结尾靠的道具和人物关系有没有提前交代；埋下的东西有没有用上；不合常理的要求有没有理由；人物在那个位置看不看得到；对东西动手时够不够得着、有没有走过去、手里有没有那样东西；主角有没有做过要付代价的选择。每一条要么改稿解决，要么写明为什么保留。全部处理完，分镜和视频才能开始。</p>';
+  const intro = '<p class="small muted">拍视频之前，先把剧本的逻辑捋顺。每次检查让模型独立核对两遍，任何一遍查出的问题都会列出来。这一步逐条核对：场外人物知道的事有没有来源；结尾靠的道具和人物关系有没有提前交代；埋下的东西有没有用上；不合常理的要求有没有理由；人物在那个位置看不看得到；对东西动手时够不够得着、有没有走过去、手里有没有那样东西；每样东西放在那里、这样放着合不合常理，人物的关键做法有没有理由；主角有没有做过要付代价的选择。每一条要么改稿解决，要么写明为什么保留。全部处理完，分镜和视频才能开始。</p>';
   const state = !accepted ? '<p class="small">这一版还不是本集的定稿。可以先检查，改好后在剧本页采用；分镜和视频只认已采用的定稿。</p>'
     : gate.passed ? `<div class="inline-success" role="status">剧本逻辑已经捋顺${gate.check.findings.length ? `：${gate.check.findings.length} 个问题都写明了保留的理由` : '，没有发现断开的地方'}。可以去做分镜了。</div>`
     : `<div class="inline-warning" role="status">${esc(gate.message)}</div>`;
@@ -39,7 +50,7 @@ export function logicView(o: {bundle: ProjectBundle; revision: Revision; episode
   const openCount = check.findings.filter(f => !check.kept?.[f.id]).length;
   const revise = openCount ? `<div class="language-toolbar"><button class="button primary" data-action="logic-revise" ${disabled(!o.live || o.dirty)}>按这 ${openCount} 条整体改稿</button><span class="small muted">一次看全剧本，把相关的问题合在一起改（不是一场一场地改），改完自动再检查一遍。结果另存为新版本，不会自动采用；你对比后再决定。</span></div>` : '';
   return `<section class="logic-panel"><div class="bible-head"><h3>剧本逻辑检查 <span class="small muted">${esc(new Date(check.createdAt).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}))}</span></h3><div class="header-actions">${run}</div></div>${intro}${state}`
-    + `${revise}${check.findings.length ? `<ol class="logic-findings">${rows}</ol>` : '<p>没有发现断开的地方。</p>'}${blockingView(check, revision)}`
+    + `${revise}${check.findings.length ? `<ol class="logic-findings">${rows}</ol>` : '<p>没有发现断开的地方。</p>'}${premisesView(check)}${blockingView(check, revision)}`
     + '<p class="small muted">改稿后会生成新版本：在剧本页采用新版本，再回到这里重新检查。同一个问题如果还在，之前写的保留理由会沿用。</p></section>';
 }
 

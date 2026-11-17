@@ -4,7 +4,7 @@
  * Browser-safe: no Node.js modules, so the workspace can reuse the constants and names. */
 import type { BibleContent, Localization, LogicBlocking, ProductionCharacter, ProductionProfile, RenderBatch, RenderClip, RenderJob, RenderPrompt, Revision, Shot, ShotList } from '../types';
 import { settingSentences } from './bible';
-import { foldBlocking, openingState } from './blocking';
+import { foldBlocking, openingState, sceneSet } from './blocking';
 import { scriptLanguage } from './languages';
 import { lineIndex } from './logic';
 import { dialoguePositions, inlineLabel, labelOnly, normalizeSpeakerName, scriptLines } from './scriptLines';
@@ -235,11 +235,18 @@ export function planRenderBatch(input: RenderPlanInput): {batch: RenderBatch; jo
     let continuity = '';
     const opening = fold?.before(planned.shots[0]!.sceneId, planned.shots[0]!.firstLine);
     if (opening && input.blocking) {
-      const people = inFrame.map(id => ({key: [cast.get(id), displayName.get(id)].find(n => n && opening.people.has(normalizeSpeakerName(n))) ?? cast.get(id) ?? id, name: label(id)}));
+      const person = (id: string) => ({key: [cast.get(id), displayName.get(id)].find(n => n && opening.people.has(normalizeSpeakerName(n))) ?? cast.get(id) ?? id, name: label(id)});
       // Only what the script has shown before the clip's first line: a key still under the mat is not named.
       const first = index.at(`${planned.shots[0]!.sceneId}:${planned.shots[0]!.firstLine}`);
-      const {text, missing} = openingState(input.blocking, opening, people, ref => { const at = index.at(ref); return !!at && !!first && !index.before(first, at); });
-      continuity = text;
+      const revealed = (ref: string) => { const at = index.at(ref); return !!at && !!first && !index.before(first, at); };
+      // The first shot's people set the opening picture; someone who enters later is described for when they appear,
+      // so what they carry is never painted into a shot they are not in.
+      const firstPeople = planned.shots[0]!.characters, later = inFrame.filter(id => !firstPeople.includes(id));
+      const now = openingState(input.blocking, opening, firstPeople.map(person), revealed);
+      const then = later.length ? openingState(input.blocking, {...opening, things: new Map([...opening.things].filter(([, s]) => !!s.holder))}, later.map(person), revealed, 'When they appear later in this clip:') : {text: '', missing: []};
+      const set = sceneSet(input.blocking, planned.shots[0]!.sceneId);
+      continuity = [set && !UNSAFE.test(set.en) && !/[\u3000-\u9fff]/u.test(set.en) ? sentence(`Fixed layout of this place, the same in every shot: ${set.en.replace(/[.]$/u, '')}`) : '', now.text, then.text].filter(Boolean).join(' ');
+      const missing = [...new Set([...now.missing, ...then.missing])];
       if (missing.length) clipWarnings.push(`走位里 ${missing.join('、')} 没有英文写法，这一段的开场状态里没写它们。请重新做剧本逻辑检查。`);
     }
 

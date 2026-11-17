@@ -27,7 +27,7 @@ const POSTURES: Posture[] = ['standing', 'sitting', 'lying', 'kneeling'];
 interface Index { at(ref: string): LineRef | undefined; text(ref: string): string }
 
 /** One validator for the model's blocking. `ref` checks a line reference of the revision. */
-export function parseBlocking(value: unknown, ref: (v: unknown, label: string) => string, coverage?: string[]): LogicBlocking {
+export function parseBlocking(value: unknown, ref: (v: unknown, label: string) => string, coverage?: string[], scenes?: string[]): LogicBlocking {
   const row = record(value, '走位');
   const zones = list(row.zones, '区域', 40).map((item, i) => {
     const z = record(item, `第 ${i + 1} 个区域`);
@@ -43,7 +43,8 @@ export function parseBlocking(value: unknown, ref: (v: unknown, label: string) =
     const id = t.id as string, holder = optText(t.holder, `东西 ${id} 的持有人`, 60);
     // A thing in someone's hands is with them, wherever the model also placed it.
     const place = holder ? (zone(t.zone, `东西 ${id}`), null) : zone(t.zone, `东西 ${id}`);
-    return {id, name: text(t.name, `东西 ${id} 的名字`, 60), en: text(t.en, `东西 ${id} 的英文`, 120), ref: ref(t.ref, `东西 ${id} 第一次出现`), zone: place, holder};
+    const placement = holder ? null : optText(t.placement, `东西 ${id} 的摆放方式`, 120);
+    return {id, name: text(t.name, `东西 ${id} 的名字`, 60), en: text(t.en, `东西 ${id} 的英文`, 120), ref: ref(t.ref, `东西 ${id} 第一次出现`), zone: place, holder, ...(placement ? {placement} : {})};
   });
   const thingIds = new Set(things.map(t => t.id));
   if (thingIds.size !== things.length) reject('东西编号重复。');
@@ -53,7 +54,8 @@ export function parseBlocking(value: unknown, ref: (v: unknown, label: string) =
     label = `${label}（${String(e.kind)}）`;
     if (!KINDS.includes(kind)) reject(`动作类型只能是 ${KINDS.join('、')}。`);
     const posture = e.posture === undefined || e.posture === null || e.posture === '' ? null : POSTURES.includes(e.posture as Posture) ? e.posture as Posture : reject(`posture 只能是 ${POSTURES.join('、')}。`);
-    const out = {ref: lineRef ?? ref(e.ref, label), who: text(e.who, `${label}的人物`, 60), kind, zone: zone(e.zone, label), posture, thing: thing(e.thing, label), with: thing(e.with, label), to: optText(e.to, `${label}的接收人`, 60), state: optText(e.state, `${label}的状态`, 80)};
+    const placement = optText(e.placement, `${label}的摆放方式`, 120);
+    const out = {ref: lineRef ?? ref(e.ref, label), who: text(e.who, `${label}的人物`, 60), kind, zone: zone(e.zone, label), posture, thing: thing(e.thing, label), with: thing(e.with, label), to: optText(e.to, `${label}的接收人`, 60), state: optText(e.state, `${label}的状态`, 80), ...(placement ? {placement} : {})};
     if (kind === 'move' && !out.zone) reject(`${label}要写走到哪个区域（zone）。`);
     if (['take', 'put', 'give', 'use'].includes(kind) && !out.thing) reject(`${label}要写对哪样东西（thing）。`);
     if (kind === 'give' && !out.to) reject(`${label}要写递给谁（to）。`);
@@ -75,8 +77,26 @@ export function parseBlocking(value: unknown, ref: (v: unknown, label: string) =
     if (coverage?.length) reject('走位需要按 user.blockingLines 逐行填写 lines。');
     events = list(row.events, '动作', 300).map((item, i) => event(item, `第 ${i + 1} 个动作`));
   }
-  return {zones, things, events};
+  // One fixed layout per place, so every clip of a scene builds the same room.
+  const sceneIds = scenes ?? [];
+  const sets = list(row.sets, '场景布局', 30).map((item, i) => {
+    const s = record(item, `第 ${i + 1} 个场景布局`);
+    if (typeof s.id !== 'string' || !/^set\d{1,3}$/u.test(s.id)) reject(`第 ${i + 1} 个场景布局的编号应为 set1、set2 这样的编号。`);
+    const id = s.id as string;
+    const inScenes = list(s.scenes, `布局 ${id} 的场景`, 60).map(x => typeof x === 'string' && (!scenes || sceneIds.includes(x)) ? x : reject(`布局 ${id} 的场景 ${String(x)} 不在剧本里。`));
+    const inZones = list(s.zones, `布局 ${id} 的区域`, 40).map(x => typeof x === 'string' && zoneIds.has(x) ? x : reject(`布局 ${id} 的区域 ${String(x)} 不在区域表里。`));
+    return {id, name: text(s.name, `布局 ${id} 的名字`, 60), en: text(s.en, `布局 ${id} 的英文布局`, 700), scenes: inScenes, zones: inZones};
+  });
+  if (coverage && scenes) {
+    const placed = new Set(sets.flatMap(s => s.scenes)), missing = scenes.filter(id => !placed.has(id));
+    if (missing.length) reject(`场景布局漏了场景 ${missing.join('、')}：每一场都要归到一个 sets 里。`);
+    if (sets.flatMap(s => s.scenes).length !== placed.size) reject('同一场不能同时属于两个场景布局。');
+  }
+  return {...(sets.length ? {sets} : {}), zones, things, events};
 }
+
+/** The fixed layout of a scene's place, if the blocking has one. */
+export const sceneSet = (blocking: LogicBlocking, sceneId: string) => blocking.sets?.find(s => s.scenes.includes(sceneId));
 
 /** The lines the model must answer for: every non-blank line that is not dialogue or a speaker label. */
 export function actionRefs(revision: Pick<Revision, 'scenes'>): string[] {
@@ -87,7 +107,7 @@ export function actionRefs(revision: Pick<Revision, 'scenes'>): string[] {
 }
 
 export interface PersonState { zone: string | null; posture: Posture | null; since: string | null }
-export interface ThingState { zone: string | null; holder: string | null; state: string | null }
+export interface ThingState { zone: string | null; holder: string | null; state: string | null; placement?: string | null }
 /** People by normalized name, things by ID. */
 export interface SceneState { people: Map<string, PersonState>; things: Map<string, ThingState>; conditions: Map<string, string[]> }
 const clone = (s: SceneState): SceneState => ({people: new Map([...s.people].map(([k, v]) => [k, {...v}])), things: new Map([...s.things].map(([k, v]) => [k, {...v}])), conditions: new Map([...s.conditions].map(([k, v]) => [k, [...v]]))});
@@ -107,7 +127,7 @@ export function foldBlocking(blocking: LogicBlocking, revision: Pick<Revision, '
   const order = (ref: string) => { const r = index.at(ref)!; return r.scene * 10_000 + r.line; };
   const events = blocking.events.map((e, i) => ({e, i})).sort((a, b) => order(a.e.ref) - order(b.e.ref) || a.i - b.i).map(x => x.e);
   for (const e of events) { if (!names.has(key(e.who))) names.set(key(e.who), e.who); if (e.to && !names.has(key(e.to))) names.set(key(e.to), e.to); }
-  const state: SceneState = {people: new Map(), things: new Map(blocking.things.map(t => [t.id, {zone: t.zone, holder: t.holder ? key(t.holder) : null, state: null}])), conditions: new Map()};
+  const state: SceneState = {people: new Map(), things: new Map(blocking.things.map(t => [t.id, {zone: t.zone, holder: t.holder ? key(t.holder) : null, state: null, ...(t.placement ? {placement: t.placement} : {})}])), conditions: new Map()};
   const add = (kind: LogicFinding['kind'], ref: string, subject: string, title: string, detail: string, fix: string) => {
     const id = `${kind}:${ref}:${quote(subject, 40)}`;
     if (!findings.some(f => f.id === id)) findings.push({id, kind, ref, title, detail, fix});
@@ -177,25 +197,26 @@ export function foldBlocking(blocking: LogicBlocking, revision: Pick<Revision, '
             break;
           case 'take':
             outOfReach('拿起');
-            target!.holder = k; target!.zone = null;
+            target!.holder = k; target!.zone = null; target!.placement = null;
             break;
           case 'put': {
             notHolding(e.thing!, '放下');
             if (e.zone && p.zone && e.zone !== p.zone) add('out_of_reach', ref, `${who}:${tName}:${e.zone}`, `${who} 在${zoneName(p.zone)}，却把“${quote(tName, 30)}”放到了${zoneName(e.zone)}`, `${line(ref)}：${who} 这时在${zoneName(p.zone)}${since(p)}，正文没有写 ${who} 走到${zoneName(e.zone)}。`, `在这之前加一个走过去的动作，或者让 ${who} 放在身边。`);
-            target!.holder = null; target!.zone = e.zone ?? p.zone ?? target!.zone;
+            target!.holder = null; target!.zone = e.zone ?? p.zone ?? target!.zone; target!.placement = e.placement ?? null;
             break;
           }
           case 'give': {
             notHolding(e.thing!, '递出');
             const q = state.people.get(key(e.to!));
             if (q?.zone && p.zone && q.zone !== p.zone) add('out_of_reach', ref, `${who}:${e.to}:${tName}`, `${who} 把“${quote(tName, 30)}”递给 ${e.to}，可两人不在一处`, `${line(ref)}：${who} 在${zoneName(p.zone)}${since(p)}，${e.to} 在${zoneName(q.zone)}${since(q)}，正文没有写谁走过去。`, `在这之前让其中一人走过去。`);
-            target!.holder = key(e.to!); target!.zone = null;
+            target!.holder = key(e.to!); target!.zone = null; target!.placement = null;
             break;
           }
           case 'use':
             outOfReach('碰到');
             if (e.with) notHolding(e.with, '要用');
             if (e.state) target!.state = e.state;
+            if (e.placement && !target!.holder) target!.placement = e.placement;
             break;
           // Conditions last across scenes until the script ends them.
           case 'condition': { const list = state.conditions.get(k) ?? []; if (!list.includes(e.state!)) list.push(e.state!); state.conditions.set(k, list); break; }
@@ -213,7 +234,7 @@ const thingPhrase = (t: {en: string}, s: ThingState) => `${t.en.replace(/[.]$/u,
 
 /** The English opening state of a clip for the people in it: zone, posture, what each holds, and the things within
  * their reach. Pieces without English text are left out and reported. */
-export function openingState(blocking: LogicBlocking, state: SceneState, people: {key: string; name: string}[], revealed: (thingRef: string) => boolean = () => true): {text: string; missing: string[]} {
+export function openingState(blocking: LogicBlocking, state: SceneState, people: {key: string; name: string}[], revealed: (thingRef: string) => boolean = () => true, prefix = 'Continuity at the start of this clip:'): {text: string; missing: string[]} {
   const zones = new Map(blocking.zones.map(z => [z.id, z])), parts: string[] = [], missing: string[] = [];
   // A thing the script has not shown yet stays out of the picture, wherever it already is.
   const things = new Map(blocking.things.filter(t => revealed(t.ref)).map(t => [t.id, t]));
@@ -235,8 +256,13 @@ export function openingState(blocking: LogicBlocking, state: SceneState, people:
     if (conditions.length) parts.push(sentence(`${name} has ${andList(conditions)}`));
   }
   const near = [...state.things].filter(([, s]) => !s.holder && s.zone && occupied.has(s.zone)).slice(0, 4);
-  for (const [id, s] of near) { const t = things.get(id)!, where = zoneEn(s.zone); if (!english(t.en)) { missing.push(t.name); continue; } if (where) parts.push(sentence(`${capitalize(thingPhrase(t, s))} is ${where}`)); }
-  return {text: parts.length ? `Continuity at the start of this clip: ${parts.join(' ')}` : '', missing: [...new Set(missing)]};
+  // How a thing rests ("taped to the side of the refrigerator", "hidden under the doormat") wins over its zone.
+  for (const [id, s] of near) {
+    const t = things.get(id)!, where = english(s.placement) ? s.placement.replace(/[.]$/u, '') : zoneEn(s.zone);
+    if (!english(t.en)) { missing.push(t.name); continue; }
+    if (where) parts.push(sentence(`${capitalize(thingPhrase(t, s))} is ${where}`));
+  }
+  return {text: parts.length ? `${prefix} ${parts.join(' ')}` : '', missing: [...new Set(missing)]};
 }
 const capitalize = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 /** "a, b and c". */

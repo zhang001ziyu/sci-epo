@@ -35,19 +35,31 @@ export interface LogicLedger {
   choices: {ref: string; choice: string; cost: string}[];
   /** Where people and things are, and every action that moves them or touches a thing. Absent in checks made before blocking. */
   blocking?: LogicBlocking;
+  /** Why each thing the story uses is where it is, placed the way it is: common sense, or a reason in the text. */
+  premises?: LogicPremise[];
+  /** Why each character does the actions the story turns on. */
+  conduct?: LogicConduct[];
 }
+export type Verdict = 'yes' | 'no' | 'unclear';
+/** `common`: an ordinary viewer expects it without explanation. `reasonRef`: the line that explains it otherwise. */
+export interface LogicPremise { thingId: string | null; name: string; ref: string; placement: string; placedBy: string | null; common: boolean; reasonRef: string | null; plausible: Verdict; why: string }
+export interface LogicConduct { who: string; ref: string; action: string; common: boolean; reasonRef: string | null; plausible: Verdict; why: string }
 export type Posture = 'standing' | 'sitting' | 'lying' | 'kneeling';
 /** `condition` gives a person a lasting change of body or clothes (a burned palm, soaked clothes); `recover` ends it. */
 export type BlockingKind = 'at' | 'move' | 'stand' | 'sit' | 'take' | 'put' | 'give' | 'use' | 'condition' | 'recover';
 /** Zones are places within reach of each other inside; things are what people take, put, give or act on.
  * Names are in Chinese for the author; `en` is the short English phrase clip prompts use. */
 export interface LogicBlocking {
+  /** One fixed layout per place: its fixtures and where they stand relative to each other, in English for clips. */
+  sets?: {id: string; name: string; en: string; scenes: string[]; zones: string[]}[];
   zones: {id: string; name: string; en: string}[];
-  things: {id: string; name: string; en: string; ref: string; zone: string | null; holder: string | null}[];
-  /** In script order. `at` places a person where the scene first shows them; every later change needs its own action. */
-  events: {ref: string; who: string; kind: BlockingKind; zone: string | null; posture: Posture | null; thing: string | null; with: string | null; to: string | null; state: string | null}[];
+  /** `placement`: how the thing rests, as an English phrase after "is" ("taped to the side of the refrigerator"). */
+  things: {id: string; name: string; en: string; ref: string; zone: string | null; holder: string | null; placement?: string | null}[];
+  /** In script order. `at` places a person where the scene first shows them; every later change needs its own action.
+   * `placement` is how the thing rests after a put or use. */
+  events: {ref: string; who: string; kind: BlockingKind; zone: string | null; posture: Posture | null; thing: string | null; with: string | null; to: string | null; state: string | null; placement?: string | null}[];
 }
-export type LogicKind = 'offscreen_knowledge' | 'ending_unstated' | 'ending_late' | 'dead_setup' | 'unexplained_instruction' | 'unseen' | 'no_choice' | 'out_of_reach' | 'not_holding' | 'no_move';
+export type LogicKind = 'offscreen_knowledge' | 'ending_unstated' | 'ending_late' | 'dead_setup' | 'unexplained_instruction' | 'unseen' | 'no_choice' | 'out_of_reach' | 'not_holding' | 'no_move' | 'implausible' | 'unmotivated';
 /** A finding the program draws from the ledger, in plain words, with where it is and a way to fix it. */
 export interface LogicFinding { id: string; kind: LogicKind; ref: string; title: string; detail: string; fix: string;
   /** How many of the check's independent passes found this break; absent for a single-pass check. */
